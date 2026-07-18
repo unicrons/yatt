@@ -71,6 +71,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newScanCmd(opts))
 	root.AddCommand(newHistoryCmd(opts))
 	root.AddCommand(newDiffCmd(opts))
+	root.AddCommand(newTriageCmd(opts))
 
 	return root
 }

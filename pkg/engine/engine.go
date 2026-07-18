@@ -36,6 +36,11 @@ type Candidate struct {
 	Technique string
 }
 
+// TechniqueOriginal labels the seed's own row. It is not a registered technique
+// — nothing generates it — but it travels through the same pipeline as the
+// candidates so the seed is resolved, stored and diffed on one code path.
+const TechniqueOriginal = "original"
+
 // registry holds the known techniques in registration order, which is also the
 // order Permute walks them in.
 var registry []Technique
@@ -141,6 +146,39 @@ func Permute(seed Seed, techniques []Technique) []Candidate {
 		}
 	}
 	return candidates
+}
+
+// Original returns the seed's own row, shaped like a candidate.
+func Original(seed Seed) Candidate {
+	return Candidate{
+		Domain:      seed.String(),
+		Registrable: seed.Registrable(),
+		SLD:         seed.SLD,
+		Technique:   TechniqueOriginal,
+	}
+}
+
+// WithOriginal prepends the seed's own row to a candidate set.
+//
+// The seed leads the report because it is the baseline the candidates are read
+// against: whether a look-alike has mail configured is only interesting next to
+// whether the real domain does.
+//
+// A candidate equal to the seed is dropped rather than emitted twice. Permute
+// already refuses to return the seed's own SLD, so this is belt-and-braces
+// against a technique that mutates the suffix instead of the label — the TLD
+// swap can in principle land back on the original name.
+func WithOriginal(seed Seed, candidates []Candidate) []Candidate {
+	original := Original(seed)
+	out := make([]Candidate, 0, len(candidates)+1)
+	out = append(out, original)
+	for _, c := range candidates {
+		if c.Domain == original.Domain {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // ValidLabel reports whether s can be a single DNS label.

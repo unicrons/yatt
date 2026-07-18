@@ -156,8 +156,14 @@ func TestScanRendersJSON(t *testing.T) {
 		t.Fatal("no findings")
 	}
 
+	// The seed's own row leads the report, so the candidates start at index 1.
+	if findings[0].Technique != "original" || findings[0].Candidate != "example.com" {
+		t.Errorf("first finding = %q/%q, want the seed row example.com/original",
+			findings[0].Candidate, findings[0].Technique)
+	}
+
 	var registered int
-	for _, f := range findings {
+	for _, f := range findings[1:] {
 		if f.Technique != "omission" {
 			t.Errorf("technique = %q, want %q", f.Technique, "omission")
 		}

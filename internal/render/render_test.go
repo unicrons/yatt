@@ -10,6 +10,8 @@ import (
 	"github.com/andoniaf/yatt/internal/render"
 	"github.com/andoniaf/yatt/internal/scan"
 	"github.com/andoniaf/yatt/internal/store"
+	"github.com/andoniaf/yatt/internal/triage"
+	"github.com/andoniaf/yatt/pkg/engine"
 )
 
 func sampleFindings() []scan.Finding {
@@ -26,6 +28,8 @@ func sampleFindings() []scan.Finding {
 			NS:          []string{"ns1.example.net"},
 			Rcode:       "NOERROR",
 			Diff:        scan.DiffChanged,
+			Triage:      triage.StatusSuspicious,
+			TriageNote:  "parked on a squatter nameserver",
 		},
 		{
 			Candidate:   "eample.com",
@@ -33,6 +37,43 @@ func sampleFindings() []scan.Finding {
 			Technique:   "omission",
 			Rcode:       "NXDOMAIN",
 			Diff:        scan.DiffNew,
+			Triage:      triage.StatusNew,
+		},
+	}
+}
+
+// findingsWithTrailingSeed is what a renderer must cope with: the seed's own row
+// arriving somewhere other than first, because some later ordering moved it.
+func findingsWithTrailingSeed() []scan.Finding {
+	return append(sampleFindings(), scan.Finding{
+		Candidate:   "example.com",
+		Registrable: "example.com",
+		Technique:   engine.TechniqueOriginal,
+		Registered:  true,
+		HasNS:       true,
+		HasA:        true,
+		HasMX:       true,
+		Addresses:   []string{"192.0.2.10"},
+		Rcode:       "NOERROR",
+		Diff:        scan.DiffUnchanged,
+	})
+}
+
+func sampleTriage() []store.Triage {
+	updated := time.Date(2026, 7, 18, 9, 30, 0, 0, time.UTC)
+	return []store.Triage{
+		{
+			Seed:      "example.com",
+			Candidate: "xample.com",
+			Status:    triage.StatusSuspicious,
+			Note:      "parked on a squatter nameserver",
+			UpdatedAt: updated,
+		},
+		{
+			Seed:      "example.com",
+			Candidate: "eample.com",
+			Status:    triage.StatusOwned,
+			UpdatedAt: updated.Add(-time.Hour),
 		},
 	}
 }
@@ -68,9 +109,9 @@ func TestTableRender(t *testing.T) {
 	}
 
 	want := strings.Join([]string{
-		"CANDIDATE   TECHNIQUE  DIFF     REGISTERED  NS   MX  A    ADDRESSES",
-		"xample.com  omission   changed  yes         yes  -   yes  192.0.2.1",
-		"eample.com  omission   new      -           -    -   -    ",
+		"CANDIDATE   TECHNIQUE  DIFF     TRIAGE      REGISTERED  NS   MX  A    ADDRESSES",
+		"xample.com  omission   changed  suspicious  yes         yes  -   yes  192.0.2.1",
+		"eample.com  omission   new      new         -           -    -   -    ",
 		"",
 	}, "\n")
 
@@ -164,6 +205,94 @@ func TestJSONRenderCarriesDiffStatus(t *testing.T) {
 	}
 }
 
+func TestTableRenderMarksAbsentTriageStatus(t *testing.T) {
+	var buf bytes.Buffer
+	// A stateless run reads no verdicts, so the column has nothing to say. It
+	// must still be present, or the table silently loses a column between a
+	// stored and an unstored run.
+	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission"}}
+	if err := (render.TableRenderer{}).Render(&buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(buf.String(), "TRIAGE") {
+		t.Errorf("Render() = %q, want a TRIAGE column", buf.String())
+	}
+}
+
+func TestJSONRenderCarriesTriageStatus(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (render.JSONRenderer{}).Render(&buf, sampleFindings()); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	var got []scan.Finding
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if got[0].Triage != triage.StatusSuspicious || got[1].Triage != triage.StatusNew {
+		t.Errorf("triage statuses = %q, %q, want %q, %q",
+			got[0].Triage, got[1].Triage, triage.StatusSuspicious, triage.StatusNew)
+	}
+	if got[0].TriageNote != "parked on a squatter nameserver" {
+		t.Errorf("triage note = %q, want the stored note", got[0].TriageNote)
+	}
+	if !strings.Contains(buf.String(), `"triage": "suspicious"`) {
+		t.Errorf("triage is not a first-class JSON field:\n%s", buf.String())
+	}
+}
+
+func TestTableRenderTriage(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (render.TableRenderer{}).RenderTriage(&buf, sampleTriage()); err != nil {
+		t.Fatalf("RenderTriage: %v", err)
+	}
+
+	got := buf.String()
+	for _, want := range []string{"CANDIDATE", "STATUS", "UPDATED", "NOTE", "suspicious", "owned"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RenderTriage() = %q, want it to contain %q", got, want)
+		}
+	}
+	if lines := strings.Split(strings.TrimSpace(got), "\n"); len(lines) != 3 {
+		t.Errorf("RenderTriage() produced %d lines, want a header plus 2 rows:\n%s", len(lines), got)
+	}
+}
+
+func TestJSONRenderTriage(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (render.JSONRenderer{}).RenderTriage(&buf, sampleTriage()); err != nil {
+		t.Fatalf("RenderTriage: %v", err)
+	}
+
+	var got []store.Triage
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if len(got) != 2 || got[0].Candidate != "xample.com" || got[0].Status != triage.StatusSuspicious {
+		t.Errorf("decoded %+v, want the two sample verdicts", got)
+	}
+}
+
+func TestJSONRenderTriageEmptyIsAnArrayNotNull(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (render.JSONRenderer{}).RenderTriage(&buf, nil); err != nil {
+		t.Fatalf("RenderTriage: %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "[]" {
+		t.Errorf("RenderTriage() = %q, want %q", got, "[]")
+	}
+}
+
+func TestNDJSONRenderTriageOneObjectPerLine(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (render.NDJSONRenderer{}).RenderTriage(&buf, sampleTriage()); err != nil {
+		t.Fatalf("RenderTriage: %v", err)
+	}
+	if lines := strings.Split(strings.TrimSpace(buf.String()), "\n"); len(lines) != 2 {
+		t.Errorf("got %d lines, want 2:\n%s", len(lines), buf.String())
+	}
+}
+
 func TestTableRenderEmpty(t *testing.T) {
 	var buf bytes.Buffer
 	if err := (render.TableRenderer{}).Render(&buf, nil); err != nil {
@@ -236,6 +365,85 @@ func TestNDJSONRenderOneObjectPerLine(t *testing.T) {
 	}
 }
 
+// Every format leads with the seed, whatever order the findings arrive in: the
+// guarantee is the renderers', so no upstream ordering can lose it in one format
+// while keeping it in another.
+func TestSeedIsRenderedFirstInEveryFormat(t *testing.T) {
+	t.Run("table", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := (render.TableRenderer{}).Render(&buf, findingsWithTrailingSeed()); err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 4 {
+			t.Fatalf("got %d lines, want a header plus 3 rows:\n%s", len(lines), buf.String())
+		}
+		if !strings.HasPrefix(lines[1], "example.com") {
+			t.Errorf("first row = %q, want the seed", lines[1])
+		}
+		if !strings.Contains(lines[1], engine.TechniqueOriginal) {
+			t.Errorf("first row = %q, want it marked %q", lines[1], engine.TechniqueOriginal)
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := (render.JSONRenderer{}).Render(&buf, findingsWithTrailingSeed()); err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		var got []scan.Finding
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+		}
+		if len(got) != 3 {
+			t.Fatalf("decoded %d findings, want 3", len(got))
+		}
+		if !got[0].IsOriginal() || got[0].Candidate != "example.com" {
+			t.Errorf("first finding = %+v, want the seed", got[0])
+		}
+		// The candidates keep their own order below it.
+		if got[1].Candidate != "xample.com" || got[2].Candidate != "eample.com" {
+			t.Errorf("candidate order = %q, %q, want xample.com then eample.com",
+				got[1].Candidate, got[2].Candidate)
+		}
+	})
+
+	t.Run("ndjson", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := (render.NDJSONRenderer{}).Render(&buf, findingsWithTrailingSeed()); err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 3 {
+			t.Fatalf("got %d lines, want 3:\n%s", len(lines), buf.String())
+		}
+		var first scan.Finding
+		if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+			t.Fatalf("first line is not valid JSON: %v", err)
+		}
+		if !first.IsOriginal() || first.Candidate != "example.com" {
+			t.Errorf("first line = %+v, want the seed", first)
+		}
+	})
+}
+
+// A blank triage column on the seed is deliberate: "new" would file the domain
+// being protected into the untriaged backlog.
+func TestTableRendersTheSeedWithNoTriageStatus(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []scan.Finding{{
+		Candidate: "example.com",
+		Technique: engine.TechniqueOriginal,
+		Diff:      scan.DiffUnchanged,
+	}}
+	if err := (render.TableRenderer{}).Render(&buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if strings.Contains(buf.String(), "new") {
+		t.Errorf("Render() = %q, want the seed's triage column blank rather than \"new\"", buf.String())
+	}
+}
+
 func TestSummarize(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -245,7 +453,15 @@ func TestSummarize(t *testing.T) {
 		{
 			name:     "counts registered candidates and diff statuses",
 			findings: sampleFindings(),
-			want:     "2 candidates, 1 registered, 1 new, 1 changed",
+			want:     "2 candidates, 1 registered, 1 new, 1 changed, 1 triaged",
+		},
+		{
+			name: "an untriaged candidate is not counted as triaged",
+			findings: []scan.Finding{
+				{Candidate: "a.com", Triage: triage.StatusNew},
+				{Candidate: "b.com", Triage: triage.StatusOwned},
+			},
+			want: "2 candidates, 0 registered, 1 triaged",
 		},
 		{
 			name:     "a stateless run reports no diff counts",
@@ -261,6 +477,25 @@ func TestSummarize(t *testing.T) {
 			name:     "errors are called out",
 			findings: []scan.Finding{{Candidate: "a.com", Error: "i/o timeout"}},
 			want:     "1 candidates, 0 registered, 1 errored",
+		},
+		{
+			// The seed is not a candidate and counting it would report one extra
+			// candidate, and one extra registered domain, on every scan.
+			name:     "the seed is not counted as a candidate",
+			findings: findingsWithTrailingSeed(),
+			want:     "2 candidates, 1 registered, 1 new, 1 changed, 1 triaged",
+		},
+		{
+			name: "a movement in the seed's own signals is called out",
+			findings: []scan.Finding{
+				{
+					Candidate: "example.com",
+					Technique: engine.TechniqueOriginal,
+					Diff:      scan.DiffChanged,
+				},
+				{Candidate: "a.com", Technique: "omission", Diff: scan.DiffUnchanged},
+			},
+			want: "1 candidates, 0 registered, the seed's own signals changed",
 		},
 	}
 

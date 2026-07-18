@@ -15,6 +15,8 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/andoniaf/yatt/internal/store/migrations"
+	"github.com/andoniaf/yatt/internal/triage"
+	"github.com/andoniaf/yatt/pkg/engine"
 )
 
 // timeFormat is the ISO-8601 convention every timestamp column uses. SQLite has
@@ -182,8 +184,14 @@ func (s *SQLite) ScanAt(ctx context.Context, seed string, offset int) (*Scan, []
 	if err != nil {
 		return nil, nil, err
 	}
-	scan.Candidates = len(findings)
+	// The seed's own row is stored alongside the candidates so it takes part in
+	// the diff, but it is not one of them and must not inflate the counts a
+	// history listing reports.
 	for _, f := range findings {
+		if f.Technique == engine.TechniqueOriginal {
+			continue
+		}
+		scan.Candidates++
 		if f.Registered {
 			scan.Registered++
 		}
@@ -195,15 +203,19 @@ func (s *SQLite) ScanAt(ctx context.Context, seed string, offset int) (*Scan, []
 func (s *SQLite) ListScans(ctx context.Context, seed string) ([]Scan, error) {
 	seed = NormalizeSeed(seed)
 
+	// The seed's own row is excluded from both counts: it is stored like a
+	// candidate so it takes part in the diff, but it is not one. CASE rather than
+	// a FILTER clause keeps the aggregate inside the portable subset.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.seed, s.profile, s.created_at,
-		       COUNT(f.id),
-		       COALESCE(SUM(f.registered), 0)
+		       COALESCE(SUM(CASE WHEN f.id IS NOT NULL AND f.technique <> ? THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN f.registered = 1 AND f.technique <> ? THEN 1 ELSE 0 END), 0)
 		FROM scans s
 		LEFT JOIN findings f ON f.scan_id = s.id
 		WHERE s.seed = ?
 		GROUP BY s.id, s.seed, s.profile, s.created_at
-		ORDER BY s.created_at DESC, s.id DESC`, seed)
+		ORDER BY s.created_at DESC, s.id DESC`,
+		engine.TechniqueOriginal, engine.TechniqueOriginal, seed)
 	if err != nil {
 		return nil, fmt.Errorf("store: listing scans of %s: %w", seed, err)
 	}
@@ -228,6 +240,213 @@ func (s *SQLite) ListScans(ctx context.Context, seed string) ([]Scan, error) {
 		return nil, fmt.Errorf("store: listing scans of %s: %w", seed, err)
 	}
 	return scans, nil
+}
+
+// defaultCandidateSeedLimit bounds how many alternate seeds LookupCandidate
+// reports. The result feeds a "did you mean?" error, and an error that lists
+// twenty seeds has stopped being a suggestion, so a handful is both cheaper and
+// more useful than the complete answer.
+const defaultCandidateSeedLimit = 3
+
+// LookupCandidate implements Store.
+//
+// Three small indexed probes rather than one clever statement, each skipped as
+// soon as it cannot change the answer: the common case is a candidate that is
+// recorded, and that costs exactly one row-existence check.
+func (s *SQLite) LookupCandidate(ctx context.Context, seed, candidate string, limit int) (CandidateOrigin, error) {
+	seed = NormalizeSeed(seed)
+	candidate = NormalizeCandidate(candidate)
+	if limit <= 0 {
+		limit = defaultCandidateSeedLimit
+	}
+
+	// SELECT 1 ... LIMIT 1 is the portable existence check: it stops at the
+	// first matching row and never materialises a finding, which is the point of
+	// having this method rather than reading a whole scan back.
+	recorded, err := s.exists(ctx, `
+		SELECT 1
+		FROM findings f
+		JOIN scans s ON s.id = f.scan_id
+		WHERE s.seed = ? AND f.candidate = ?
+		LIMIT 1`, seed, candidate)
+	if err != nil {
+		return CandidateOrigin{}, fmt.Errorf("store: looking up %s under %s: %w", candidate, seed, err)
+	}
+	if recorded {
+		// A recorded candidate needs no alternatives and implies the seed was
+		// scanned, so the remaining two probes are pure cost.
+		return CandidateOrigin{Recorded: true, SeedScanned: true}, nil
+	}
+
+	scanned, err := s.exists(ctx, `SELECT 1 FROM scans WHERE seed = ? LIMIT 1`, seed)
+	if err != nil {
+		return CandidateOrigin{}, fmt.Errorf("store: looking up scans of %s: %w", seed, err)
+	}
+
+	others, err := s.seedsRecording(ctx, candidate, seed, limit)
+	if err != nil {
+		return CandidateOrigin{}, err
+	}
+	return CandidateOrigin{SeedScanned: scanned, OtherSeeds: others}, nil
+}
+
+// seedsRecording names the other seeds whose scans contain candidate.
+//
+// Most recently scanned first: when an analyst confuses two seeds, the one they
+// were just working on is overwhelmingly the one they meant.
+func (s *SQLite) seedsRecording(ctx context.Context, candidate, excluding string, limit int) ([]string, error) {
+	// GROUP BY with the aggregate aliased into the select list keeps the
+	// ordering legal under both engines' rules for DISTINCT/GROUP BY, and
+	// created_at sorts correctly as text because it is a fixed-offset ISO-8601
+	// timestamp.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.seed, MAX(s.created_at) AS last_scan
+		FROM findings f
+		JOIN scans s ON s.id = f.scan_id
+		WHERE f.candidate = ? AND s.seed <> ?
+		GROUP BY s.seed
+		ORDER BY last_scan DESC, s.seed
+		LIMIT ?`, candidate, excluding, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: finding seeds recording %s: %w", candidate, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var seeds []string
+	for rows.Next() {
+		var seed, lastScan string
+		if err := rows.Scan(&seed, &lastScan); err != nil {
+			return nil, fmt.Errorf("store: finding seeds recording %s: %w", candidate, err)
+		}
+		seeds = append(seeds, seed)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: finding seeds recording %s: %w", candidate, err)
+	}
+	return seeds, nil
+}
+
+// exists runs a query written to return at most one row and reports whether it
+// returned one.
+func (s *SQLite) exists(ctx context.Context, query string, args ...any) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// The two triage reads are spelled out as whole statements rather than composed
+// from a shared prefix and an ORDER BY: assembling SQL by concatenation is the
+// habit worth not having, even where every fragment is a local constant.
+const (
+	selectTriageByCandidate = `
+		SELECT seed, candidate, status, note, updated_at
+		FROM triage
+		WHERE seed = ?
+		ORDER BY candidate`
+
+	selectTriageByUpdatedAt = `
+		SELECT seed, candidate, status, note, updated_at
+		FROM triage
+		WHERE seed = ?
+		ORDER BY updated_at DESC, candidate`
+)
+
+// GetTriage implements Store.
+func (s *SQLite) GetTriage(ctx context.Context, seed string) (map[string]Triage, error) {
+	seed = NormalizeSeed(seed)
+	rows, err := s.queryTriage(ctx, selectTriageByCandidate, seed)
+	if err != nil {
+		return nil, err
+	}
+	byCandidate := make(map[string]Triage, len(rows))
+	for _, t := range rows {
+		byCandidate[t.Candidate] = t
+	}
+	return byCandidate, nil
+}
+
+// ListTriage implements Store.
+//
+// Most recently decided first: a triage listing is read as a worklog, and the
+// decision just made is the one being checked.
+func (s *SQLite) ListTriage(ctx context.Context, seed string) ([]Triage, error) {
+	return s.queryTriage(ctx, selectTriageByUpdatedAt, NormalizeSeed(seed))
+}
+
+// SetTriage implements Store.
+//
+// The upsert stays inside the portable subset — a column-list ON CONFLICT
+// target and lowercase excluded. — so the same statement runs unmodified on
+// Postgres after the phase-2 cutover.
+func (s *SQLite) SetTriage(ctx context.Context, seed, candidate string, status triage.Status, note string) (Triage, error) {
+	seed = NormalizeSeed(seed)
+	candidate = NormalizeCandidate(candidate)
+	switch {
+	case seed == "":
+		return Triage{}, errors.New("store: empty seed")
+	case candidate == "":
+		return Triage{}, errors.New("store: empty candidate")
+	case !status.Valid():
+		// The database is the last place a bad verdict can be caught, and a
+		// status column is only worth reading if everything in it is meaningful.
+		return Triage{}, fmt.Errorf("store: invalid triage status %q", status)
+	}
+
+	var (
+		stored    Triage
+		updatedAt string
+	)
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO triage (seed, candidate, status, note, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (seed, candidate) DO UPDATE SET
+			status = excluded.status,
+			note = excluded.note,
+			updated_at = excluded.updated_at
+		RETURNING seed, candidate, status, note, updated_at`,
+		seed, candidate, string(status), note, time.Now().UTC().Format(timeFormat),
+	).Scan(&stored.Seed, &stored.Candidate, &stored.Status, &stored.Note, &updatedAt)
+	if err != nil {
+		return Triage{}, fmt.Errorf("store: recording triage for %s: %w", candidate, err)
+	}
+	if stored.UpdatedAt, err = parseTime(updatedAt); err != nil {
+		return Triage{}, err
+	}
+	return stored, nil
+}
+
+// queryTriage runs one of this file's triage SELECTs and scans the result.
+func (s *SQLite) queryTriage(ctx context.Context, query, seed string) ([]Triage, error) {
+	rows, err := s.db.QueryContext(ctx, query, seed)
+	if err != nil {
+		return nil, fmt.Errorf("store: reading triage for %s: %w", seed, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Triage
+	for rows.Next() {
+		var (
+			t         Triage
+			updatedAt string
+		)
+		if err := rows.Scan(&t.Seed, &t.Candidate, &t.Status, &t.Note, &updatedAt); err != nil {
+			return nil, fmt.Errorf("store: reading triage for %s: %w", seed, err)
+		}
+		if t.UpdatedAt, err = parseTime(updatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: reading triage for %s: %w", seed, err)
+	}
+	return out, nil
 }
 
 // findings reads every finding of one scan, in insertion order so a stored scan

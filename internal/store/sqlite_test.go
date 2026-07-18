@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/andoniaf/yatt/internal/store"
+	"github.com/andoniaf/yatt/internal/triage"
+	"github.com/andoniaf/yatt/pkg/engine"
 )
 
 // open returns a store backed by a fresh temp-file database. The repository is
@@ -43,6 +45,52 @@ func sampleFindings() []store.Finding {
 			Technique:   "omission",
 			Rcode:       "NXDOMAIN",
 		},
+	}
+}
+
+// The seed's own row is stored like a candidate so it takes part in the diff,
+// but both count paths — the per-scan one and the aggregate behind a history
+// listing — must leave it out of "candidates" and "registered".
+func TestScanCountsExcludeTheSeedRow(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	id, err := s.CreateScan(ctx, "example.com", "")
+	if err != nil {
+		t.Fatalf("CreateScan: %v", err)
+	}
+	findings := append([]store.Finding{{
+		Candidate:   "example.com",
+		Registrable: "example.com",
+		Technique:   engine.TechniqueOriginal,
+		Registered:  true,
+		HasNS:       true,
+		Rcode:       "NOERROR",
+	}}, sampleFindings()...)
+	if err := s.SaveFindings(ctx, id, findings); err != nil {
+		t.Fatalf("SaveFindings: %v", err)
+	}
+
+	scan, stored, err := s.LastScan(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("LastScan: %v", err)
+	}
+	if scan.Candidates != 2 || scan.Registered != 1 {
+		t.Errorf("LastScan counts = %d/%d, want 2 candidates and 1 registered",
+			scan.Candidates, scan.Registered)
+	}
+	// It is excluded from the counts, not from the data: the diff needs it.
+	if len(stored) != 3 {
+		t.Errorf("read back %d findings, want the seed row plus 2 candidates", len(stored))
+	}
+
+	scans, err := s.ListScans(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("ListScans: %v", err)
+	}
+	if len(scans) != 1 || scans[0].Candidates != 2 || scans[0].Registered != 1 {
+		t.Errorf("ListScans counts = %d/%d, want 2 candidates and 1 registered",
+			scans[0].Candidates, scans[0].Registered)
 	}
 }
 
@@ -283,5 +331,345 @@ func TestSaveFindingsRejectsAnUnknownScan(t *testing.T) {
 	// precede — the scan that owns them.
 	if err := open(t).SaveFindings(context.Background(), 999, sampleFindings()); err == nil {
 		t.Error("SaveFindings against an unknown scan succeeded, want an error")
+	}
+}
+
+// record is a scan of seed containing candidates, for the lookup tests.
+func record(t *testing.T, s *store.SQLite, seed string, candidates ...string) {
+	t.Helper()
+
+	ctx := context.Background()
+	id, err := s.CreateScan(ctx, seed, "")
+	if err != nil {
+		t.Fatalf("CreateScan: %v", err)
+	}
+	findings := make([]store.Finding, 0, len(candidates))
+	for _, candidate := range candidates {
+		findings = append(findings, store.Finding{Candidate: candidate, Registrable: candidate})
+	}
+	if err := s.SaveFindings(ctx, id, findings); err != nil {
+		t.Fatalf("SaveFindings: %v", err)
+	}
+}
+
+func TestLookupCandidate(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	record(t, s, "example.com", "example.com", "xample.com", "eample.com")
+	record(t, s, "unicrons.cloud", "unicrons.cloud", "nicrons.cloud")
+
+	tests := []struct {
+		name        string
+		seed        string
+		candidate   string
+		recorded    bool
+		seedScanned bool
+		otherSeeds  []string
+	}{
+		{
+			name:        "recorded under the seed",
+			seed:        "example.com",
+			candidate:   "xample.com",
+			recorded:    true,
+			seedScanned: true,
+		},
+		{
+			// The seed is stored like one of its own candidates so it takes part
+			// in the diff, which also makes it a legitimate triage target.
+			name:        "the seed's own row",
+			seed:        "example.com",
+			candidate:   "example.com",
+			recorded:    true,
+			seedScanned: true,
+		},
+		{
+			name:        "recorded under a different seed",
+			seed:        "example.com",
+			candidate:   "nicrons.cloud",
+			seedScanned: true,
+			otherSeeds:  []string{"unicrons.cloud"},
+		},
+		{
+			name:        "recorded nowhere",
+			seed:        "example.com",
+			candidate:   "unrelated.test",
+			seedScanned: true,
+		},
+		{
+			// An unscanned seed is reported as such, and the alternatives are
+			// still gathered: a caller that leads with "nothing was ever scanned
+			// here" can still add "...and that name belongs to this other seed",
+			// which is usually what a mistyped seed looks like.
+			name:       "seed never scanned",
+			seed:       "never-scanned.com",
+			candidate:  "xample.com",
+			otherSeeds: []string{"example.com"},
+		},
+		{
+			name:        "normalizes both names",
+			seed:        " Example.COM. ",
+			candidate:   " XAMPLE.com. ",
+			recorded:    true,
+			seedScanned: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := s.LookupCandidate(ctx, tt.seed, tt.candidate, 0)
+			if err != nil {
+				t.Fatalf("LookupCandidate: %v", err)
+			}
+			if got.Recorded != tt.recorded || got.SeedScanned != tt.seedScanned {
+				t.Errorf("LookupCandidate = %+v, want recorded=%v scanned=%v",
+					got, tt.recorded, tt.seedScanned)
+			}
+			if len(got.OtherSeeds) != len(tt.otherSeeds) {
+				t.Fatalf("other seeds = %v, want %v", got.OtherSeeds, tt.otherSeeds)
+			}
+			for i, want := range tt.otherSeeds {
+				if got.OtherSeeds[i] != want {
+					t.Errorf("other seeds[%d] = %q, want %q", i, got.OtherSeeds[i], want)
+				}
+			}
+		})
+	}
+}
+
+// The alternate seeds feed a "did you mean?" suggestion, so the answer has to
+// stay short and lead with the seed the analyst most likely meant.
+func TestLookupCandidateBoundsAndOrdersAlternateSeeds(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	// A candidate shared by several seeds — plausible when one organisation
+	// watches related brands. Scanned oldest first, so the last one recorded is
+	// the most recent.
+	for _, seed := range []string{"first.com", "second.com", "third.com", "fourth.com"} {
+		record(t, s, seed, "shared.com")
+		time.Sleep(time.Millisecond)
+	}
+
+	got, err := s.LookupCandidate(ctx, "example.com", "shared.com", 2)
+	if err != nil {
+		t.Fatalf("LookupCandidate: %v", err)
+	}
+	if len(got.OtherSeeds) != 2 {
+		t.Fatalf("other seeds = %v, want the limit of 2 honoured", got.OtherSeeds)
+	}
+	if got.OtherSeeds[0] != "fourth.com" || got.OtherSeeds[1] != "third.com" {
+		t.Errorf("other seeds = %v, want the most recently scanned first", got.OtherSeeds)
+	}
+
+	// A seed that recorded the candidate itself is never offered as an
+	// alternative to itself.
+	own, err := s.LookupCandidate(ctx, "third.com", "shared.com", 0)
+	if err != nil {
+		t.Fatalf("LookupCandidate: %v", err)
+	}
+	if !own.Recorded || len(own.OtherSeeds) != 0 {
+		t.Errorf("LookupCandidate = %+v, want it recorded with no alternatives", own)
+	}
+}
+
+func TestTriageOfAnUntriagedSeedIsEmpty(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	verdicts, err := s.GetTriage(ctx, "never-triaged.com")
+	if err != nil {
+		t.Fatalf("GetTriage: %v", err)
+	}
+	if len(verdicts) != 0 {
+		t.Errorf("GetTriage = %v, want no verdicts", verdicts)
+	}
+
+	entries, err := s.ListTriage(ctx, "never-triaged.com")
+	if err != nil {
+		t.Fatalf("ListTriage: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("ListTriage = %v, want no verdicts", entries)
+	}
+}
+
+func TestSetTriageStoresAndReadsBack(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	stored, err := s.SetTriage(ctx, "example.com", "xample.com", triage.StatusOwned, "defensive registration")
+	if err != nil {
+		t.Fatalf("SetTriage: %v", err)
+	}
+	if stored.Seed != "example.com" || stored.Candidate != "xample.com" {
+		t.Errorf("stored = %+v, want it keyed by seed and candidate", stored)
+	}
+	if stored.Status != triage.StatusOwned || stored.Note != "defensive registration" {
+		t.Errorf("stored = %+v, want the owned verdict and its note", stored)
+	}
+	if stored.UpdatedAt.IsZero() || time.Since(stored.UpdatedAt) > time.Minute {
+		t.Errorf("updated_at = %v, want a recent timestamp", stored.UpdatedAt)
+	}
+
+	verdicts, err := s.GetTriage(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("GetTriage: %v", err)
+	}
+	got, ok := verdicts["xample.com"]
+	if !ok {
+		t.Fatalf("GetTriage = %v, want an entry keyed by candidate", verdicts)
+	}
+	if got.Status != triage.StatusOwned || got.Note != "defensive registration" {
+		t.Errorf("GetTriage entry = %+v, want the stored verdict", got)
+	}
+}
+
+// The upsert is the whole reason for the unique constraint: re-triaging must
+// overwrite the verdict, not accumulate a second, invisible one.
+func TestSetTriageUpsertsRatherThanDuplicating(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	if _, err := s.SetTriage(ctx, "example.com", "xample.com", triage.StatusSuspicious, "looks parked"); err != nil {
+		t.Fatalf("SetTriage: %v", err)
+	}
+	if _, err := s.SetTriage(ctx, "example.com", "xample.com", triage.StatusMalicious, "serving a phishing page"); err != nil {
+		t.Fatalf("SetTriage: %v", err)
+	}
+
+	entries, err := s.ListTriage(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("ListTriage: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d triage rows, want 1 — the upsert duplicated instead of overwriting:\n%+v", len(entries), entries)
+	}
+	if entries[0].Status != triage.StatusMalicious || entries[0].Note != "serving a phishing page" {
+		t.Errorf("entry = %+v, want the second verdict to have won", entries[0])
+	}
+}
+
+// The moat: a verdict is keyed by seed and candidate, so it is still there
+// after the scan that produced the candidate has been superseded.
+func TestTriageSurvivesLaterScans(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	first, err := s.CreateScan(ctx, "example.com", "")
+	if err != nil {
+		t.Fatalf("CreateScan: %v", err)
+	}
+	if err := s.SaveFindings(ctx, first, sampleFindings()); err != nil {
+		t.Fatalf("SaveFindings: %v", err)
+	}
+	if _, err := s.SetTriage(ctx, "example.com", "xample.com", triage.StatusOwned, ""); err != nil {
+		t.Fatalf("SetTriage: %v", err)
+	}
+
+	second, err := s.CreateScan(ctx, "example.com", "")
+	if err != nil {
+		t.Fatalf("CreateScan: %v", err)
+	}
+	if err := s.SaveFindings(ctx, second, sampleFindings()); err != nil {
+		t.Fatalf("SaveFindings: %v", err)
+	}
+
+	verdicts, err := s.GetTriage(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("GetTriage: %v", err)
+	}
+	if verdicts["xample.com"].Status != triage.StatusOwned {
+		t.Errorf("verdict after a second scan = %+v, want it carried over as owned", verdicts["xample.com"])
+	}
+}
+
+func TestTriageIsSeedScoped(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	// The same candidate name under two different seeds is two independent
+	// judgements: "owned" by one brand says nothing about another's exposure.
+	if _, err := s.SetTriage(ctx, "example.com", "xample.com", triage.StatusOwned, ""); err != nil {
+		t.Fatalf("SetTriage: %v", err)
+	}
+	if _, err := s.SetTriage(ctx, "other.com", "xample.com", triage.StatusMalicious, ""); err != nil {
+		t.Fatalf("SetTriage: %v", err)
+	}
+
+	verdicts, err := s.GetTriage(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("GetTriage: %v", err)
+	}
+	if len(verdicts) != 1 || verdicts["xample.com"].Status != triage.StatusOwned {
+		t.Errorf("GetTriage = %v, want only this seed's owned verdict", verdicts)
+	}
+}
+
+func TestSetTriageNormalizesSeedAndCandidate(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	if _, err := s.SetTriage(ctx, " Example.COM. ", " XAMPLE.com. ", triage.StatusBenign, ""); err != nil {
+		t.Fatalf("SetTriage: %v", err)
+	}
+
+	verdicts, err := s.GetTriage(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("GetTriage: %v", err)
+	}
+	// A verdict typed in a different shape must land on the row the scanner
+	// wrote, not create a parallel one nobody will ever see again.
+	if _, ok := verdicts["xample.com"]; !ok {
+		t.Errorf("GetTriage = %v, want the verdict keyed by the normalized candidate", verdicts)
+	}
+}
+
+func TestSetTriageRejectsBadInput(t *testing.T) {
+	tests := []struct {
+		name      string
+		seed      string
+		candidate string
+		status    triage.Status
+	}{
+		{name: "empty seed", seed: "  ", candidate: "xample.com", status: triage.StatusBenign},
+		{name: "empty candidate", seed: "example.com", candidate: "  ", status: triage.StatusBenign},
+		// The database is the last place a meaningless verdict can be caught,
+		// and a status column is only worth reading if all of it is meaningful.
+		{name: "unknown status", seed: "example.com", candidate: "xample.com", status: "bogus"},
+		{name: "empty status", seed: "example.com", candidate: "xample.com", status: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := open(t).SetTriage(context.Background(), tt.seed, tt.candidate, tt.status, ""); err == nil {
+				t.Error("SetTriage succeeded, want an error")
+			}
+		})
+	}
+}
+
+func TestListTriageIsMostRecentlyUpdatedFirst(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	for _, candidate := range []string{"aaa.com", "bbb.com", "ccc.com"} {
+		if _, err := s.SetTriage(ctx, "example.com", candidate, triage.StatusBenign, ""); err != nil {
+			t.Fatalf("SetTriage: %v", err)
+		}
+		// The timestamp has nanosecond resolution, but sleeping a hair keeps the
+		// ordering unambiguous on a coarse clock.
+		time.Sleep(time.Millisecond)
+	}
+
+	entries, err := s.ListTriage(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("ListTriage: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("got %d entries, want 3", len(entries))
+	}
+	if entries[0].Candidate != "ccc.com" {
+		t.Errorf("first entry = %q, want the most recently updated (ccc.com)", entries[0].Candidate)
 	}
 }

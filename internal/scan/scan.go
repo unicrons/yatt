@@ -8,6 +8,7 @@ import (
 
 	"github.com/andoniaf/yatt/internal/resolver"
 	"github.com/andoniaf/yatt/internal/store"
+	"github.com/andoniaf/yatt/internal/triage"
 	"github.com/andoniaf/yatt/pkg/engine"
 )
 
@@ -25,6 +26,13 @@ type Finding struct {
 	MX          []string `json:"mx,omitempty"`
 	// Rcode is the response code of the NS query that decided Registered.
 	Rcode string `json:"rcode,omitempty"`
+	// Triage is the analyst's standing verdict on this candidate, carried
+	// forward from every previous scan of the same seed. It is triage.StatusNew
+	// for a candidate nobody has judged, and empty only when the run was not
+	// persisted and so had no verdicts to read.
+	Triage triage.Status `json:"triage,omitempty"`
+	// TriageNote is the note recorded alongside the verdict.
+	TriageNote string `json:"triage_note,omitempty"`
 	// Diff is this candidate's standing against the previous scan of the same
 	// seed. It is empty when the run was not persisted and so had nothing to
 	// compare against.
@@ -87,7 +95,10 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		techniques = engine.All()
 	}
 
-	candidates := engine.Permute(seed, techniques)
+	// The seed leads its own report: it is resolved, recorded and diffed exactly
+	// like a candidate, so an analyst can read the candidates' signals against
+	// the real domain's instead of guessing what "normal" looks like for it.
+	candidates := engine.WithOriginal(seed, engine.Permute(seed, techniques))
 	findings := make([]Finding, 0, len(candidates))
 
 	for _, candidate := range candidates {
@@ -145,12 +156,58 @@ func persist(ctx context.Context, opts Options, seed string, result Result) (Res
 	}
 
 	diff := Diff(fromStore(priorFindings), result.Findings)
+	if err := hydrateTriage(ctx, opts.Store, seed, &diff); err != nil {
+		return result, err
+	}
 
 	result.ScanID = scanID
 	result.Findings = diff.Findings
 	result.Gone = diff.Gone
 	result.Previous = previous
 	return result, nil
+}
+
+// hydrateTriage attaches each candidate's standing verdict to the findings.
+//
+// This runs after the diff rather than before it, because the diff is defined
+// over resolved signals alone. A verdict is a statement by a human about a
+// domain, not a property of the DNS answer, so changing one must never make a
+// candidate report as "changed".
+func hydrateTriage(ctx context.Context, s store.Store, seed string, diff *DiffResult) error {
+	verdicts, err := s.GetTriage(ctx, seed)
+	if err != nil {
+		return err
+	}
+
+	apply := func(findings []Finding) {
+		for i := range findings {
+			verdict, ok := verdicts[store.NormalizeCandidate(findings[i].Candidate)]
+			if !ok {
+				if findings[i].IsOriginal() {
+					// The seed's own row is left blank rather than "new". "New"
+					// means "nobody has judged this yet", which is a statement
+					// about an untriaged backlog — and the domain being
+					// protected is not in anyone's backlog. Blanking it also
+					// keeps `--status new` selecting exactly the candidates
+					// still awaiting a verdict.
+					continue
+				}
+				// An unjudged candidate is reported as new rather than blank, so
+				// the column always says something and `--status new` selects
+				// exactly the backlog.
+				findings[i].Triage = triage.StatusNew
+				continue
+			}
+			// A verdict deliberately recorded against the seed is still honoured:
+			// marking your own domain `owned` is a reasonable thing to want to
+			// see, and refusing to show it would make the record invisible.
+			findings[i].Triage = verdict.Status
+			findings[i].TriageNote = verdict.Note
+		}
+	}
+	apply(diff.Findings)
+	apply(diff.Gone)
+	return nil
 }
 
 // Comparison is a diff between two recorded scans of one seed.
@@ -183,9 +240,16 @@ func CompareLast(ctx context.Context, s store.Store, seed string) (Comparison, e
 		return Comparison{}, err
 	}
 
+	// The diff reads only stored signals, but it still renders through the same
+	// columns as a scan, so it carries the same verdicts.
+	diff := Diff(fromStore(priorFindings), fromStore(currentFindings))
+	if err := hydrateTriage(ctx, s, store.NormalizeSeed(seed), &diff); err != nil {
+		return Comparison{}, err
+	}
+
 	return Comparison{
 		Current:  current,
 		Previous: previous,
-		Result:   Diff(fromStore(priorFindings), fromStore(currentFindings)),
+		Result:   diff,
 	}, nil
 }

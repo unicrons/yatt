@@ -99,20 +99,51 @@ func Diff(prior, current []Finding) DiffResult {
 }
 
 // Changes returns only the findings that differ from the previous scan, in
-// report order: new, then changed, then gone.
+// report order: the seed's own row, then new, then changed, then gone.
+//
+// The seed leads whether or not it moved, because it is the baseline the changes
+// are read against — a candidate that just gained MX means one thing when the
+// real domain has MX and another when it does not. It is skipped in the three
+// groups below so it is never listed twice.
 func Changes(result DiffResult) []Finding {
 	var changes []Finding
 	for _, f := range result.Findings {
-		if f.Diff == DiffNew {
+		if f.IsOriginal() {
+			changes = append(changes, f)
+			break
+		}
+	}
+	for _, f := range result.Findings {
+		if f.Diff == DiffNew && !f.IsOriginal() {
 			changes = append(changes, f)
 		}
 	}
 	for _, f := range result.Findings {
-		if f.Diff == DiffChanged {
+		if f.Diff == DiffChanged && !f.IsOriginal() {
 			changes = append(changes, f)
 		}
 	}
-	return append(changes, result.Gone...)
+	for _, f := range result.Gone {
+		if !f.IsOriginal() {
+			changes = append(changes, f)
+		}
+	}
+	return changes
+}
+
+// HasChanges reports whether anything actually moved between the two scans.
+//
+// Changes always emits the seed's row, so its length can no longer answer this:
+// a report of exactly one row means "nothing changed", not "one thing changed".
+// A movement in the seed's own signals does count — a change to the domain being
+// protected is news.
+func HasChanges(result DiffResult) bool {
+	for _, f := range result.Findings {
+		if f.Diff == DiffNew || f.Diff == DiffChanged {
+			return true
+		}
+	}
+	return len(result.Gone) > 0
 }
 
 // fromStore maps persisted findings back into the domain type.

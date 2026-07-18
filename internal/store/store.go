@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/andoniaf/yatt/internal/triage"
 )
 
 // Scan is one recorded run against a seed domain.
@@ -47,6 +49,37 @@ type Finding struct {
 	Error       string
 }
 
+// Triage is an analyst's recorded verdict on one candidate of one seed.
+//
+// Unlike Finding it is not scoped to a scan: the same row is read by every
+// future scan of the seed, which is what makes a verdict persistent.
+type Triage struct {
+	Seed      string        `json:"seed"`
+	Candidate string        `json:"candidate"`
+	Status    triage.Status `json:"status"`
+	Note      string        `json:"note,omitempty"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
+// CandidateOrigin says where a candidate name has actually been recorded.
+//
+// It exists so a command can tell three situations apart that all look like
+// "this candidate is unknown": the seed has never been scanned, the candidate
+// belongs to a different seed, and the candidate belongs nowhere at all. Only
+// the middle one can be turned into a corrected command line, so the three have
+// to be distinguishable before the error message is written.
+type CandidateOrigin struct {
+	// Recorded reports whether the candidate appears in any recorded scan of
+	// the seed asked about, including as the seed's own row.
+	Recorded bool
+	// SeedScanned reports whether the seed has any recorded scan at all.
+	SeedScanned bool
+	// OtherSeeds names seeds that did record this candidate, most recently
+	// scanned first and capped by the caller's limit. It is only populated when
+	// Recorded is false, since it exists to answer "did you mean this seed?".
+	OtherSeeds []string
+}
+
 // Store records scans and reads back the history of a seed.
 type Store interface {
 	// CreateScan records a new run and returns its identifier.
@@ -63,6 +96,25 @@ type Store interface {
 	ScanAt(ctx context.Context, seed string, offset int) (*Scan, []Finding, error)
 	// ListScans returns every scan of seed, most recent first.
 	ListScans(ctx context.Context, seed string) ([]Scan, error)
+	// LookupCandidate reports whether candidate has ever been recorded under
+	// seed, and if not, which other seeds did record it — at most limit of them,
+	// so the answer stays bounded no matter how many seeds share a candidate.
+	//
+	// It answers from what scans actually stored rather than by re-deriving the
+	// permutation set, because the permutation set moves with the technique and
+	// profile flags: a candidate produced by yesterday's run is a real part of
+	// this seed's history even if today's narrower flags would not emit it.
+	LookupCandidate(ctx context.Context, seed, candidate string, limit int) (CandidateOrigin, error)
+	// GetTriage returns every recorded verdict for seed, keyed by candidate.
+	// Candidates nobody has judged are simply absent rather than present with a
+	// "new" status, so the map size is the number of decisions actually made.
+	GetTriage(ctx context.Context, seed string) (map[string]Triage, error)
+	// SetTriage records or replaces the verdict on one candidate and returns the
+	// stored row.
+	SetTriage(ctx context.Context, seed, candidate string, status triage.Status, note string) (Triage, error)
+	// ListTriage returns every recorded verdict for seed, most recently updated
+	// first.
+	ListTriage(ctx context.Context, seed string) ([]Triage, error)
 	// Close releases the underlying database handle.
 	Close() error
 }
@@ -71,6 +123,15 @@ type Store interface {
 // "example.com" share one history.
 func NormalizeSeed(seed string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(seed)), ".")
+}
+
+// NormalizeCandidate is the canonical form a candidate is keyed by.
+//
+// It is deliberately the same normalization as NormalizeSeed — both are domain
+// names — so a verdict typed as "XAMPLE.COM." lands on the row the scanner
+// wrote as "xample.com" instead of creating a second, invisible one.
+func NormalizeCandidate(candidate string) string {
+	return NormalizeSeed(candidate)
 }
 
 // DefaultPath returns the database location used when --db is not given.
