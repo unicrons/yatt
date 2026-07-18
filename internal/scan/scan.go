@@ -1,5 +1,5 @@
 // Package scan orchestrates a single run: permute the seed, resolve every
-// candidate, and collect the boolean signals into findings.
+// candidate, record the result, and compare it against the previous run.
 package scan
 
 import (
@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/andoniaf/yatt/internal/resolver"
+	"github.com/andoniaf/yatt/internal/store"
 	"github.com/andoniaf/yatt/pkg/engine"
 )
 
@@ -24,6 +25,10 @@ type Finding struct {
 	MX          []string `json:"mx,omitempty"`
 	// Rcode is the response code of the NS query that decided Registered.
 	Rcode string `json:"rcode,omitempty"`
+	// Diff is this candidate's standing against the previous scan of the same
+	// seed. It is empty when the run was not persisted and so had nothing to
+	// compare against.
+	Diff DiffStatus `json:"diff,omitempty"`
 	// Error records a per-candidate resolution failure. A failed candidate is
 	// still reported rather than dropped, so a partially-failed scan is visibly
 	// partial instead of silently short.
@@ -39,15 +44,31 @@ type Options struct {
 	// Techniques are applied in the order given. Defaults to every registered
 	// technique when empty.
 	Techniques []engine.Technique
+	// Store persists the run and supplies the previous one to diff against.
+	// When nil the scan is stateless: it still resolves and reports, but no
+	// diff status is attached.
+	Store store.Store
+	// Profile names the settings the run used, recorded alongside the scan so
+	// history explains why two scans of one seed differ in size.
+	Profile string
 }
 
 // Result is the outcome of a run.
 type Result struct {
-	Seed     engine.Seed `json:"-"`
-	Findings []Finding   `json:"findings"`
+	Seed engine.Seed `json:"-"`
+	// ScanID identifies the persisted scan, or zero when the run was not
+	// persisted.
+	ScanID   int64     `json:"scan_id,omitempty"`
+	Findings []Finding `json:"findings"`
+	// Gone lists candidates the previous scan found and this one did not.
+	Gone []Finding `json:"gone,omitempty"`
+	// Previous is the scan this run was compared against, or nil if this is the
+	// seed's first recorded scan.
+	Previous *store.Scan `json:"previous,omitempty"`
 }
 
-// Run permutes the seed and resolves every candidate.
+// Run permutes the seed, resolves every candidate, records the run, and diffs
+// it against the seed's previous run.
 //
 // Resolution is serial at this stage; bounded concurrency and rate limiting
 // arrive with the wildcard work, once there is enough fan-out to need them.
@@ -96,5 +117,75 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		findings = append(findings, finding)
 	}
 
-	return Result{Seed: seed, Findings: findings}, nil
+	result := Result{Seed: seed, Findings: findings}
+	if opts.Store == nil {
+		return result, nil
+	}
+	return persist(ctx, opts, seed.String(), result)
+}
+
+// persist records the run and attaches each finding's standing against the
+// previous run.
+//
+// The previous scan is read before the new one is created, because the new scan
+// would otherwise be the most recent and every candidate would compare against
+// itself.
+func persist(ctx context.Context, opts Options, seed string, result Result) (Result, error) {
+	previous, priorFindings, err := opts.Store.LastScan(ctx, seed)
+	if err != nil {
+		return result, err
+	}
+
+	scanID, err := opts.Store.CreateScan(ctx, seed, opts.Profile)
+	if err != nil {
+		return result, err
+	}
+	if err := opts.Store.SaveFindings(ctx, scanID, toStore(result.Findings)); err != nil {
+		return result, err
+	}
+
+	diff := Diff(fromStore(priorFindings), result.Findings)
+
+	result.ScanID = scanID
+	result.Findings = diff.Findings
+	result.Gone = diff.Gone
+	result.Previous = previous
+	return result, nil
+}
+
+// Comparison is a diff between two recorded scans of one seed.
+type Comparison struct {
+	// Current and Previous are the two scans compared. Previous is nil when the
+	// seed has only ever been scanned once.
+	Current  *store.Scan `json:"current"`
+	Previous *store.Scan `json:"previous"`
+	// Result holds the classified findings.
+	Result DiffResult `json:"-"`
+}
+
+// CompareLast diffs a seed's most recent recorded scan against the one before
+// it, without resolving anything.
+func CompareLast(ctx context.Context, s store.Store, seed string) (Comparison, error) {
+	if s == nil {
+		return Comparison{}, fmt.Errorf("scan: no store configured")
+	}
+
+	current, currentFindings, err := s.ScanAt(ctx, seed, 0)
+	if err != nil {
+		return Comparison{}, err
+	}
+	if current == nil {
+		return Comparison{}, fmt.Errorf("no recorded scans for %s: run `yatt scan %s` first", seed, seed)
+	}
+
+	previous, priorFindings, err := s.ScanAt(ctx, seed, 1)
+	if err != nil {
+		return Comparison{}, err
+	}
+
+	return Comparison{
+		Current:  current,
+		Previous: previous,
+		Result:   Diff(fromStore(priorFindings), fromStore(currentFindings)),
+	}, nil
 }

@@ -10,7 +10,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/andoniaf/yatt/internal/render"
+	"github.com/andoniaf/yatt/internal/store"
 )
+
+// newStore is the seam tests replace so a command test never touches the user's
+// real database.
+var newStore = func(path string) (store.Store, error) {
+	return store.Open(path)
+}
 
 // globalOptions holds the flags declared on the root command and inherited by
 // every subcommand.
@@ -18,7 +25,21 @@ type globalOptions struct {
 	output   string
 	resolver string
 	timeout  time.Duration
+	db       string
 	verbose  bool
+}
+
+// openStore opens the scan database, defaulting to a per-user location when
+// --db was not given.
+func (o *globalOptions) openStore() (store.Store, error) {
+	path := o.db
+	if path == "" {
+		var err error
+		if path, err = store.DefaultPath(); err != nil {
+			return nil, fmt.Errorf("cannot determine the default database location, pass --db: %w", err)
+		}
+	}
+	return newStore(path)
 }
 
 // NewRootCmd builds the command tree.
@@ -43,9 +64,13 @@ func NewRootCmd() *cobra.Command {
 	flags.StringVar(&opts.resolver, "resolver", "",
 		"upstream DNS resolver as host[:port] (default: the system resolver)")
 	flags.DurationVar(&opts.timeout, "timeout", 3*time.Second, "per-query DNS timeout")
+	flags.StringVar(&opts.db, "db", "",
+		"scan database path (default: yatt/yatt.db under the user config directory)")
 	flags.BoolVarP(&opts.verbose, "verbose", "v", false, "log scan progress to stderr")
 
 	root.AddCommand(newScanCmd(opts))
+	root.AddCommand(newHistoryCmd(opts))
+	root.AddCommand(newDiffCmd(opts))
 
 	return root
 }

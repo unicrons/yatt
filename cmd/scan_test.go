@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/andoniaf/yatt/internal/resolver"
 	"github.com/andoniaf/yatt/internal/scan"
+	"github.com/andoniaf/yatt/internal/store"
 )
 
 // scriptedResolver answers NOERROR with an A record for the names in
@@ -42,6 +45,14 @@ func (s scriptedResolver) Query(_ context.Context, name string, qtype uint16) (*
 	return m, nil
 }
 
+// forbiddenResolver fails the test if it is asked anything at all.
+type forbiddenResolver struct{ t *testing.T }
+
+func (r forbiddenResolver) Query(_ context.Context, name string, _ uint16) (*dns.Msg, error) {
+	r.t.Errorf("unexpected DNS query for %s: this command must answer from the store alone", name)
+	return nil, errors.New("resolver must not be used")
+}
+
 // withFakeResolver swaps the resolver constructor for the duration of a test
 // and reports the address the command asked for.
 func withFakeResolver(t *testing.T, fake resolver.Resolver) *string {
@@ -56,6 +67,37 @@ func withFakeResolver(t *testing.T, fake resolver.Resolver) *string {
 	t.Cleanup(func() { newResolver = original })
 
 	return &requestedAddr
+}
+
+// withForbiddenResolver asserts that a command reaches its answer without
+// touching DNS.
+//
+// Both constructing a resolver and querying one fail the test: a command that
+// dials the network only to discard the result is still wrong, and catching it
+// at construction pins the failure to the line that caused it rather than to a
+// query several frames deeper.
+func withForbiddenResolver(t *testing.T) {
+	t.Helper()
+
+	original := newResolver
+	newResolver = func(addr string, _ time.Duration) (resolver.Resolver, error) {
+		t.Errorf("unexpected resolver constructed for %q: this command must answer from the store alone", addr)
+		return forbiddenResolver{t: t}, nil
+	}
+	t.Cleanup(func() { newResolver = original })
+}
+
+// withTempStore points the command tree at a throwaway database, so no test
+// ever reads or writes the user's real scan history.
+func withTempStore(t *testing.T) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "yatt.db")
+	original := newStore
+	newStore = func(string) (store.Store, error) {
+		return store.Open(path)
+	}
+	t.Cleanup(func() { newStore = original })
 }
 
 // run executes the command tree with args, returning stdout and stderr.
@@ -73,6 +115,7 @@ func run(t *testing.T, args ...string) (string, string, error) {
 }
 
 func TestScanRendersTable(t *testing.T) {
+	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
 	stdout, _, err := run(t, "scan", "example.com")
@@ -97,6 +140,7 @@ func TestScanRendersTable(t *testing.T) {
 }
 
 func TestScanRendersJSON(t *testing.T) {
+	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
 	stdout, _, err := run(t, "scan", "example.com", "--output", "json")
@@ -130,6 +174,7 @@ func TestScanRendersJSON(t *testing.T) {
 }
 
 func TestScanRendersNDJSON(t *testing.T) {
+	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
 	stdout, _, err := run(t, "scan", "example.com", "--output", "ndjson")
@@ -146,6 +191,7 @@ func TestScanRendersNDJSON(t *testing.T) {
 }
 
 func TestScanPassesResolverFlagThrough(t *testing.T) {
+	withTempStore(t)
 	addr := withFakeResolver(t, scriptedResolver{})
 
 	if _, _, err := run(t, "scan", "example.com", "--resolver", "9.9.9.9:53"); err != nil {
@@ -157,6 +203,7 @@ func TestScanPassesResolverFlagThrough(t *testing.T) {
 }
 
 func TestScanVerboseWritesToStderrOnly(t *testing.T) {
+	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
 	stdout, stderr, err := run(t, "scan", "example.com", "--output", "json", "--verbose")
@@ -199,6 +246,7 @@ func TestScanErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			withTempStore(t)
 			withFakeResolver(t, scriptedResolver{})
 
 			_, _, err := run(t, tt.args...)
