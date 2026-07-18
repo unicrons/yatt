@@ -52,6 +52,9 @@ func newScanCmd(global *globalOptions) *cobra.Command {
 			"and diffed like a candidate but is never hidden by --status/--exclude-status.\n\n" +
 			"Registration is decided by the response code of an NS query at the candidate's\n" +
 			"registrable domain, so parked and MX-only domains are still reported as registered.\n\n" +
+			"Each zone is probed once for a catch-all: a candidate whose addresses match what\n" +
+			"its zone hands out for names that do not exist is marked in the wildcard column,\n" +
+			"since such a zone answers for every look-alike whether or not anyone registered it.\n\n" +
 			"Every scan is recorded, and each candidate is reported as new, changed, unchanged\n" +
 			"or gone relative to the previous scan of the same seed, alongside the standing\n" +
 			"triage verdict carried over from `yatt triage`.\n\n" +
@@ -101,9 +104,11 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 	}
 
 	result, err := scan.Run(cmd.Context(), scan.Options{
-		Seed:     seed,
-		Resolver: dnsResolver,
-		Store:    scanStore,
+		Seed:        seed,
+		Resolver:    dnsResolver,
+		Store:       scanStore,
+		Concurrency: global.concurrency,
+		QPS:         global.qps,
 	})
 	if err != nil {
 		return err

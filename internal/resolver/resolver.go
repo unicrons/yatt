@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"golang.org/x/time/rate"
 
 	"github.com/andoniaf/yatt/pkg/engine"
 )
@@ -25,6 +26,15 @@ const DefaultResolver = "1.1.1.1:53"
 // DefaultTimeout bounds a single query.
 const DefaultTimeout = 3 * time.Second
 
+// DefaultAttempts is how many times a query is sent before giving up, counting
+// the first send. Scans are overwhelmingly NXDOMAIN, which is exactly the
+// traffic public resolvers throttle by dropping packets, so a single timeout is
+// weak evidence that a name does not resolve.
+const DefaultAttempts = 3
+
+// DefaultBackoff is the pause before the second attempt; it doubles thereafter.
+const DefaultBackoff = 250 * time.Millisecond
+
 // Resolver issues a single DNS question and returns the raw response.
 //
 // It is an interface so the scan path can be exercised against scripted
@@ -34,9 +44,19 @@ type Resolver interface {
 }
 
 // Client is the live Resolver, talking to a single upstream resolver.
+//
+// miekg/dns does neither of the two things a bulk scanner needs from a DNS
+// client: it never retries, and it never falls back to TCP when a response
+// comes back truncated. Both are done here, because both failure modes are
+// silent — a dropped UDP packet and a truncated answer would otherwise both
+// read as "this candidate does not exist".
 type Client struct {
-	addr   string
-	client *dns.Client
+	addr string
+	udp  *dns.Client
+	tcp  *dns.Client
+	// attempts counts the first send, so 1 means no retry.
+	attempts int
+	backoff  time.Duration
 }
 
 // New returns a Client querying addr. A missing port defaults to 53. An empty
@@ -52,7 +72,13 @@ func New(addr string, timeout time.Duration) (*Client, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	return &Client{addr: addr, client: &dns.Client{Timeout: timeout}}, nil
+	return &Client{
+		addr:     addr,
+		udp:      &dns.Client{Timeout: timeout},
+		tcp:      &dns.Client{Net: "tcp", Timeout: timeout},
+		attempts: DefaultAttempts,
+		backoff:  DefaultBackoff,
+	}, nil
 }
 
 // Addr returns the upstream resolver address in use.
@@ -60,19 +86,100 @@ func (c *Client) Addr() string { return c.addr }
 
 // Query implements Resolver.
 //
-// Note that miekg/dns neither retries nor falls back to TCP on a truncated
-// response; both are the caller's responsibility and are added in a later
-// phase.
+// A transport failure is retried with exponential backoff; a truncated
+// response is re-asked over TCP. A response carrying an Rcode is returned as
+// it stands, whatever that Rcode is: deciding which response codes mean
+// something is the caller's job, and re-asking a resolver that just answered
+// SERVFAIL mostly adds load to a resolver already struggling.
 func (c *Client) Query(ctx context.Context, name string, qtype uint16) (*dns.Msg, error) {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(name), qtype)
 	m.RecursionDesired = true
 
-	resp, _, err := c.client.ExchangeContext(ctx, m, c.addr)
-	if err != nil {
+	backoff := c.backoff
+	var lastErr error
+	for attempt := 0; attempt < c.attempts; attempt++ {
+		if attempt > 0 {
+			if err := sleep(ctx, backoff); err != nil {
+				return nil, err
+			}
+			backoff *= 2
+		}
+
+		resp, _, err := c.udp.ExchangeContext(ctx, m, c.addr)
+		if err != nil {
+			lastErr = err
+			// A cancelled or expired context will not recover on a retry, and
+			// retrying it would mask the reason the scan stopped.
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		if !resp.Truncated {
+			return resp, nil
+		}
+
+		// Truncation means the answer exists but did not fit in a UDP datagram.
+		// Returning it as-is would under-report records; TCP has no such limit.
+		resp, _, err = c.tcp.ExchangeContext(ctx, m, c.addr)
+		if err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		return resp, nil
+	}
+
+	return nil, fmt.Errorf("query %s %s: %w", dns.TypeToString[qtype], name, lastErr)
+}
+
+// sleep waits for d unless the context ends first.
+func sleep(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// DefaultQPS is the query-per-second ceiling applied when none is configured.
+// Zero means unlimited: the throttle that bites first is usually the upstream
+// resolver's own, and guessing a ceiling on the user's behalf would slow every
+// scan to protect a resolver that may well be a local unbound.
+const DefaultQPS = 0
+
+// RateLimited wraps r so that no more than qps queries leave per second. A qps
+// of zero or less returns r unchanged.
+//
+// The ceiling is applied by wrapping the Resolver rather than by pacing the
+// scan loop, so every query counts against it — including the wildcard probes,
+// which are issued from somewhere the scan loop cannot see.
+func RateLimited(r Resolver, qps float64) Resolver {
+	if qps <= 0 {
+		return r
+	}
+	// A burst of one keeps the spacing even. A larger burst would let a scan
+	// open with a spike at exactly the moment a resolver is most likely to
+	// start dropping it.
+	return &limitedResolver{inner: r, limiter: rate.NewLimiter(rate.Limit(qps), 1)}
+}
+
+type limitedResolver struct {
+	inner   Resolver
+	limiter *rate.Limiter
+}
+
+func (l *limitedResolver) Query(ctx context.Context, name string, qtype uint16) (*dns.Msg, error) {
+	if err := l.limiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("query %s %s: %w", dns.TypeToString[qtype], name, err)
 	}
-	return resp, nil
+	return l.inner.Query(ctx, name, qtype)
 }
 
 // SystemResolver returns the first nameserver from the host's resolver

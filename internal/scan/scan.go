@@ -5,12 +5,22 @@ package scan
 import (
 	"context"
 	"fmt"
+	"sort"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/andoniaf/yatt/internal/resolver"
 	"github.com/andoniaf/yatt/internal/store"
 	"github.com/andoniaf/yatt/internal/triage"
+	"github.com/andoniaf/yatt/internal/wildcard"
 	"github.com/andoniaf/yatt/pkg/engine"
 )
+
+// DefaultConcurrency is how many candidates are resolved at once when no limit
+// is configured. It is deliberately modest: the resolver, not this process, is
+// the thing that falls over first, and a scan that gets itself throttled
+// finishes later than one that never was.
+const DefaultConcurrency = 20
 
 // Finding is one candidate domain and everything currently known about it.
 type Finding struct {
@@ -26,6 +36,12 @@ type Finding struct {
 	MX          []string `json:"mx,omitempty"`
 	// Rcode is the response code of the NS query that decided Registered.
 	Rcode string `json:"rcode,omitempty"`
+	// Wildcard reports that this candidate's addresses are indistinguishable
+	// from what its zone hands out for names that do not exist. The signals are
+	// still reported as resolved, because they are what DNS said; the flag is
+	// what stops an analyst reading a catch-all zone as a thousand live
+	// look-alikes.
+	Wildcard bool `json:"wildcard,omitempty"`
 	// Triage is the analyst's standing verdict on this candidate, carried
 	// forward from every previous scan of the same seed. It is triage.StatusNew
 	// for a candidate nobody has judged, and empty only when the run was not
@@ -59,6 +75,12 @@ type Options struct {
 	// Profile names the settings the run used, recorded alongside the scan so
 	// history explains why two scans of one seed differ in size.
 	Profile string
+	// Concurrency bounds how many candidates are resolved at once. Defaults to
+	// DefaultConcurrency when zero or negative.
+	Concurrency int
+	// QPS caps how many DNS queries leave per second, across all workers. Zero
+	// means unlimited.
+	QPS float64
 }
 
 // Result is the outcome of a run.
@@ -78,8 +100,12 @@ type Result struct {
 // Run permutes the seed, resolves every candidate, records the run, and diffs
 // it against the seed's previous run.
 //
-// Resolution is serial at this stage; bounded concurrency and rate limiting
-// arrive with the wildcard work, once there is enough fan-out to need them.
+// Candidates are resolved concurrently under a worker bound and an optional
+// QPS ceiling, but the report they produce does not depend on that: each worker
+// writes into its own slot in a slice ordered by the permutation engine, so two
+// runs over the same answers render byte for byte identically. That is not a
+// nicety — the entire diff feature rests on candidate order being a property of
+// the seed rather than of which goroutine happened to finish first.
 func Run(ctx context.Context, opts Options) (Result, error) {
 	if opts.Resolver == nil {
 		return Result{}, fmt.Errorf("scan: no resolver configured")
@@ -99,40 +125,122 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	// like a candidate, so an analyst can read the candidates' signals against
 	// the real domain's instead of guessing what "normal" looks like for it.
 	candidates := engine.WithOriginal(seed, engine.Permute(seed, techniques))
-	findings := make([]Finding, 0, len(candidates))
 
-	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			return Result{Seed: seed, Findings: findings}, err
-		}
-
-		finding := Finding{
-			Candidate:   candidate.Domain,
-			Registrable: candidate.Registrable,
-			Technique:   candidate.Technique,
-		}
-
-		signals, err := resolver.Signals(ctx, opts.Resolver, candidate.Domain)
-		if err != nil {
-			finding.Error = err.Error()
-		}
-		finding.Registered = signals.Registered
-		finding.HasNS = signals.HasNS
-		finding.HasA = signals.HasA
-		finding.HasMX = signals.HasMX
-		finding.Addresses = signals.Addresses
-		finding.NS = signals.NS
-		finding.MX = signals.MX
-		finding.Rcode = signals.Rcode
-
-		findings = append(findings, finding)
+	findings, err := resolveAll(ctx, opts, candidates)
+	result := Result{Seed: seed, Findings: findings}
+	if err != nil {
+		// A cancelled scan still returns what it managed to resolve, but it is
+		// never persisted: a partial run recorded as a scan would make every
+		// candidate it never reached look like it had gone away.
+		return result, err
 	}
 
-	result := Result{Seed: seed, Findings: findings}
 	if opts.Store == nil {
 		return result, nil
 	}
 	return persist(ctx, opts, seed.String(), result)
+}
+
+// resolveAll resolves every candidate concurrently and returns the findings in
+// candidate order.
+//
+// A candidate that fails to resolve is reported with its error rather than
+// dropped, and does not stop the run: one broken name in a thousand is an
+// ordinary outcome of bulk DNS, and aborting on it would throw away the other
+// nine hundred and ninety-nine. Only the context ending stops the scan.
+func resolveAll(ctx context.Context, opts Options, candidates []engine.Candidate) ([]Finding, error) {
+	dnsResolver := resolver.RateLimited(opts.Resolver, opts.QPS)
+	detector := wildcard.New(dnsResolver)
+
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = DefaultConcurrency
+	}
+
+	findings := make([]Finding, len(candidates))
+	resolved := make([]bool, len(candidates))
+
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(concurrency)
+	for i, candidate := range candidates {
+		group.Go(func() error {
+			finding, err := resolveOne(groupCtx, dnsResolver, detector, candidate)
+			if err != nil {
+				return err
+			}
+			// Distinct indices, so no two workers ever touch the same element.
+			findings[i] = finding
+			resolved[i] = true
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return compact(findings, resolved), err
+	}
+	return findings, nil
+}
+
+// resolveOne resolves a single candidate. It returns an error only when the
+// context ended; anything else is recorded on the finding.
+func resolveOne(ctx context.Context, r resolver.Resolver, detector *wildcard.Detector, candidate engine.Candidate) (Finding, error) {
+	finding := Finding{
+		Candidate:   candidate.Domain,
+		Registrable: candidate.Registrable,
+		Technique:   candidate.Technique,
+	}
+
+	signals, err := resolver.Signals(ctx, r, candidate.Domain)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Finding{}, ctx.Err()
+		}
+		finding.Error = err.Error()
+	}
+	finding.Registered = signals.Registered
+	finding.HasNS = signals.HasNS
+	finding.HasA = signals.HasA
+	finding.HasMX = signals.HasMX
+	finding.Addresses = sorted(signals.Addresses)
+	finding.NS = sorted(signals.NS)
+	finding.MX = sorted(signals.MX)
+	finding.Rcode = signals.Rcode
+
+	// The zone is probed at most once per scan however many candidates sit under
+	// it, and a zone that cannot be probed is simply not subtracted — failing to
+	// characterise a zone is no reason to fail the candidates in it.
+	signature, err := detector.Signature(ctx, candidate.Suffix)
+	if err != nil {
+		if ctx.Err() != nil {
+			return Finding{}, ctx.Err()
+		}
+		return finding, nil
+	}
+	finding.Wildcard = !signature.IsReal(finding.Addresses)
+	return finding, nil
+}
+
+// compact drops the slots no worker got to, so a cancelled scan reports the
+// candidates it resolved rather than a run of blank rows.
+func compact(findings []Finding, resolved []bool) []Finding {
+	out := make([]Finding, 0, len(findings))
+	for i, finding := range findings {
+		if resolved[i] {
+			out = append(out, finding)
+		}
+	}
+	return out
+}
+
+// sorted returns a sorted copy, so a resolver that round-robins its answers
+// cannot make two identical scans render differently.
+func sorted(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	out := make([]string, len(values))
+	copy(out, values)
+	sort.Strings(out)
+	return out
 }
 
 // persist records the run and attaches each finding's standing against the

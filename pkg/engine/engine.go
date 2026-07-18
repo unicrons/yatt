@@ -32,6 +32,11 @@ type Candidate struct {
 	Registrable string
 	// SLD is the mutated second-level label.
 	SLD string
+	// Suffix is the candidate's public suffix. It is carried explicitly rather
+	// than re-derived from Registrable because it is the zone wildcard detection
+	// probes, and a scan that swaps TLDs spreads its candidates across many of
+	// them.
+	Suffix string
 	// Technique names the technique that first produced this candidate.
 	Technique string
 }
@@ -141,6 +146,7 @@ func Permute(seed Seed, techniques []Technique) []Candidate {
 				Domain:      domain,
 				Registrable: registrable,
 				SLD:         sld,
+				Suffix:      seed.Suffix,
 				Technique:   t.Name(),
 			})
 		}
@@ -154,6 +160,7 @@ func Original(seed Seed) Candidate {
 		Domain:      seed.String(),
 		Registrable: seed.Registrable(),
 		SLD:         seed.SLD,
+		Suffix:      seed.Suffix,
 		Technique:   TechniqueOriginal,
 	}
 }

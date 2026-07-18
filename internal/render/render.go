@@ -56,7 +56,7 @@ type TableRenderer struct{}
 func (TableRenderer) Render(w io.Writer, findings []scan.Finding) error {
 	findings = scan.SeedFirst(findings)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "CANDIDATE\tTECHNIQUE\tDIFF\tTRIAGE\tREGISTERED\tNS\tMX\tA\tADDRESSES"); err != nil {
+	if _, err := fmt.Fprintln(tw, "CANDIDATE\tTECHNIQUE\tDIFF\tTRIAGE\tREGISTERED\tNS\tMX\tA\tWILDCARD\tADDRESSES"); err != nil {
 		return err
 	}
 	for _, f := range findings {
@@ -64,10 +64,10 @@ func (TableRenderer) Render(w io.Writer, findings []scan.Finding) error {
 		if f.Error != "" && addresses == "" {
 			addresses = "error: " + f.Error
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			f.Candidate, f.Technique, dash(string(f.Diff)), dash(string(f.Triage)),
 			yesNo(f.Registered), yesNo(f.HasNS), yesNo(f.HasMX), yesNo(f.HasA),
-			addresses,
+			yesNo(f.Wildcard), addresses,
 		); err != nil {
 			return err
 		}
@@ -180,7 +180,7 @@ func (NDJSONRenderer) RenderTriage(w io.Writer, entries []store.Triage) error {
 // called out separately instead, since that is a fact about the domain being
 // protected rather than about the look-alikes.
 func Summarize(findings []scan.Finding) string {
-	var candidates, registered, errored, triaged int
+	var candidates, registered, errored, triaged, wildcards int
 	var seedChanged bool
 	counts := map[scan.DiffStatus]int{}
 	for _, f := range findings {
@@ -191,6 +191,9 @@ func Summarize(findings []scan.Finding) string {
 		candidates++
 		if f.Registered {
 			registered++
+		}
+		if f.Wildcard {
+			wildcards++
 		}
 		if f.Error != "" {
 			errored++
@@ -210,6 +213,11 @@ func Summarize(findings []scan.Finding) string {
 	// scan a "0 triaged" would be noise.
 	if triaged > 0 {
 		summary += fmt.Sprintf(", %d triaged", triaged)
+	}
+	// Said out loud because a high wildcard count is the explanation for a
+	// suspiciously good scan: the zone answers for everything, not the squatters.
+	if wildcards > 0 {
+		summary += fmt.Sprintf(", %d wildcard", wildcards)
 	}
 	if errored > 0 {
 		summary += fmt.Sprintf(", %d errored", errored)

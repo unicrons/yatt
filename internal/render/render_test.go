@@ -109,9 +109,9 @@ func TestTableRender(t *testing.T) {
 	}
 
 	want := strings.Join([]string{
-		"CANDIDATE   TECHNIQUE  DIFF     TRIAGE      REGISTERED  NS   MX  A    ADDRESSES",
-		"xample.com  omission   changed  suspicious  yes         yes  -   yes  192.0.2.1",
-		"eample.com  omission   new      new         -           -    -   -    ",
+		"CANDIDATE   TECHNIQUE  DIFF     TRIAGE      REGISTERED  NS   MX  A    WILDCARD  ADDRESSES",
+		"xample.com  omission   changed  suspicious  yes         yes  -   yes  -         192.0.2.1",
+		"eample.com  omission   new      new         -           -    -   -    -         ",
 		"",
 	}, "\n")
 
@@ -238,6 +238,68 @@ func TestJSONRenderCarriesTriageStatus(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"triage": "suspicious"`) {
 		t.Errorf("triage is not a first-class JSON field:\n%s", buf.String())
+	}
+}
+
+func TestTableRenderMarksWildcardCandidates(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []scan.Finding{
+		{Candidate: "xample.com", Technique: "omission", Registered: true, HasA: true,
+			Addresses: []string{"192.0.2.1"}, Wildcard: true},
+		{Candidate: "eample.com", Technique: "omission", Registered: true, HasA: true,
+			Addresses: []string{"198.51.100.7"}},
+	}
+	if err := (render.TableRenderer{}).Render(&buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("Render() produced %d lines, want a header plus 2 rows:\n%s", len(lines), buf.String())
+	}
+	// The column is located by name rather than by position or padding width:
+	// tabwriter sizes each column to its widest cell, so asserting on literal
+	// runs of spaces breaks whenever an unrelated column grows.
+	wildcardAt := columnIndex(t, lines[0], "WILDCARD")
+
+	// Both rows resolve, so only this column tells them apart: without it a
+	// catch-all zone reads as a page of live look-alikes.
+	if got := strings.Fields(lines[1])[wildcardAt]; got != "yes" {
+		t.Errorf("wildcard row: WILDCARD = %q, want %q\n%s", got, "yes", lines[1])
+	}
+	if got := strings.Fields(lines[2])[wildcardAt]; got != "-" {
+		t.Errorf("real row: WILDCARD = %q, want it blank\n%s", got, lines[2])
+	}
+}
+
+// columnIndex returns the field position of a named column in a table header.
+func columnIndex(t *testing.T, header, name string) int {
+	t.Helper()
+	for i, field := range strings.Fields(header) {
+		if field == name {
+			return i
+		}
+	}
+	t.Fatalf("header has no %s column: %q", name, header)
+	return -1
+}
+
+func TestJSONRenderCarriesWildcard(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission", Wildcard: true}}
+	if err := (render.JSONRenderer{}).Render(&buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	var got []scan.Finding
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if !got[0].Wildcard {
+		t.Error("Wildcard = false after a JSON round-trip, want true")
+	}
+	if !strings.Contains(buf.String(), `"wildcard": true`) {
+		t.Errorf("wildcard is not a first-class JSON field:\n%s", buf.String())
 	}
 }
 
@@ -484,6 +546,17 @@ func TestSummarize(t *testing.T) {
 			name:     "the seed is not counted as a candidate",
 			findings: findingsWithTrailingSeed(),
 			want:     "2 candidates, 1 registered, 1 new, 1 changed, 1 triaged",
+		},
+		{
+			// A scan of a catch-all zone otherwise reads as an unusually
+			// successful one; the count is what says "the zone answered, not the
+			// squatters".
+			name: "wildcard candidates are counted",
+			findings: []scan.Finding{
+				{Candidate: "a.com", Registered: true, Wildcard: true},
+				{Candidate: "b.com", Registered: true},
+			},
+			want: "2 candidates, 2 registered, 1 wildcard",
 		},
 		{
 			name: "a movement in the seed's own signals is called out",

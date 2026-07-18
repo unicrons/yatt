@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/andoniaf/yatt/internal/render"
+	"github.com/andoniaf/yatt/internal/resolver"
+	"github.com/andoniaf/yatt/internal/scan"
 	"github.com/andoniaf/yatt/internal/store"
 )
 
@@ -22,11 +24,13 @@ var newStore = func(path string) (store.Store, error) {
 // globalOptions holds the flags declared on the root command and inherited by
 // every subcommand.
 type globalOptions struct {
-	output   string
-	resolver string
-	timeout  time.Duration
-	db       string
-	verbose  bool
+	output      string
+	resolver    string
+	timeout     time.Duration
+	concurrency int
+	qps         float64
+	db          string
+	verbose     bool
 }
 
 // openStore opens the scan database, defaulting to a per-user location when
@@ -64,6 +68,10 @@ func NewRootCmd() *cobra.Command {
 	flags.StringVar(&opts.resolver, "resolver", "",
 		"upstream DNS resolver as host[:port] (default: the system resolver)")
 	flags.DurationVar(&opts.timeout, "timeout", 3*time.Second, "per-query DNS timeout")
+	flags.IntVar(&opts.concurrency, "concurrency", scan.DefaultConcurrency,
+		"how many candidates to resolve at once")
+	flags.Float64Var(&opts.qps, "qps", resolver.DefaultQPS,
+		"cap DNS queries per second across all workers (0 for unlimited)")
 	flags.StringVar(&opts.db, "db", "",
 		"scan database path (default: yatt/yatt.db under the user config directory)")
 	flags.BoolVarP(&opts.verbose, "verbose", "v", false, "log scan progress to stderr")
