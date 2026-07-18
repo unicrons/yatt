@@ -53,7 +53,7 @@ func runDiff(cmd *cobra.Command, global *globalOptions, seed string) error {
 	case comparison.Previous == nil:
 		_, _ = fmt.Fprintf(stderr, "scan %d is the first recorded scan of %s: every candidate is new\n",
 			comparison.Current.ID, comparison.Current.Seed)
-	case len(changes) == 0:
+	case !scan.HasChanges(comparison.Result):
 		_, _ = fmt.Fprintf(stderr, "no changes between scans %d and %d\n",
 			comparison.Previous.ID, comparison.Current.ID)
 	case global.verbose:
