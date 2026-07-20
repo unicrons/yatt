@@ -24,6 +24,26 @@ type Technique interface {
 	Permute(sld string) []string
 }
 
+// LabelBySuffix is implemented by a technique whose label variants also
+// depend on the seed's own suffix — currently only homoglyph, which gates
+// its Unicode substitutions by the seed's TLD (data.IDNGatedTLDs). Permute
+// still runs when the technique is used outside a seed's context (for
+// example, in a technique-level test); Permute must still exist to satisfy
+// Technique, but Permute is preferred over it by Permute below whenever a
+// seed's suffix is available.
+type LabelBySuffix interface {
+	PermuteWithSuffix(sld, suffix string) []string
+}
+
+// SuffixSwap is implemented by a technique that varies the candidate's
+// suffix instead of its label — currently only TLD swap, whose candidates
+// keep the seed's own SLD and swap only what follows it.
+type SuffixSwap interface {
+	// PermuteSuffixes returns alternate suffixes for suffix. The input
+	// itself may be returned; Permute filters it out.
+	PermuteSuffixes(suffix string) []string
+}
+
 // Candidate is a single generated look-alike domain.
 type Candidate struct {
 	// Domain is the full candidate name, with the seed's subdomain reattached.
@@ -46,33 +66,65 @@ type Candidate struct {
 // candidates so the seed is resolved, stored and diffed on one code path.
 const TechniqueOriginal = "original"
 
-// registry holds the known techniques in registration order, which is also the
-// order Permute walks them in.
-var registry []Technique
+// registry holds every known technique, keyed by name.
+var registry = map[string]Technique{}
+
+// canonicalOrder is the nearest-first application order every multi-technique
+// operation uses: single-character edits before the two techniques that fan
+// out much wider (TLD swap sweeps a whole TLD list; homoglyph compounds two
+// substitution passes). This is what makes cap.go's per-technique truncation
+// keep the closest look-alikes first, and it is independent of registration
+// order — which Go source file happens to register a technique in its
+// init() must not be able to reorder a scan's output.
+var canonicalOrder = []string{"omission", "transposition", "keyboard", "tld", "homoglyph"}
 
 // Register adds a technique to the registry. It panics on a duplicate name,
 // since that can only be a programming error.
 func Register(t Technique) {
-	for _, existing := range registry {
-		if existing.Name() == t.Name() {
-			panic(fmt.Sprintf("engine: technique %q registered twice", t.Name()))
-		}
+	if _, exists := registry[t.Name()]; exists {
+		panic(fmt.Sprintf("engine: technique %q registered twice", t.Name()))
 	}
-	registry = append(registry, t)
+	registry[t.Name()] = t
 }
 
-// All returns every registered technique, in registration order.
+// orderedNames returns every registered technique name in canonicalOrder,
+// followed alphabetically by any registered technique canonicalOrder does not
+// mention — so a technique added without updating that list still appears
+// deterministically instead of vanishing.
+func orderedNames() []string {
+	seen := make(map[string]bool, len(canonicalOrder))
+	out := make([]string, 0, len(registry))
+	for _, name := range canonicalOrder {
+		if _, ok := registry[name]; ok {
+			out = append(out, name)
+			seen[name] = true
+		}
+	}
+	var rest []string
+	for name := range registry {
+		if !seen[name] {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	return append(out, rest...)
+}
+
+// All returns every registered technique, in canonical (nearest-first) order.
 func All() []Technique {
-	out := make([]Technique, len(registry))
-	copy(out, registry)
+	names := orderedNames()
+	out := make([]Technique, 0, len(names))
+	for _, name := range names {
+		out = append(out, registry[name])
+	}
 	return out
 }
 
 // Names returns the names of every registered technique, sorted.
 func Names() []string {
 	names := make([]string, 0, len(registry))
-	for _, t := range registry {
-		names = append(names, t.Name())
+	for name := range registry {
+		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names
@@ -80,17 +132,15 @@ func Names() []string {
 
 // Lookup returns the registered technique with the given name.
 func Lookup(name string) (Technique, error) {
-	for _, t := range registry {
-		if t.Name() == name {
-			return t, nil
-		}
+	if t, ok := registry[name]; ok {
+		return t, nil
 	}
 	return nil, fmt.Errorf("unknown technique %q (available: %s)", name, strings.Join(Names(), ", "))
 }
 
-// Select resolves a list of technique names to their implementations,
-// preserving registration order rather than the order the names were given, so
-// the candidate list stays stable regardless of how flags were typed.
+// Select resolves a list of technique names to their implementations, in
+// canonical order rather than the order the names were given, so the
+// candidate list stays stable regardless of how flags were typed.
 func Select(names []string) ([]Technique, error) {
 	wanted := make(map[string]bool, len(names))
 	for _, name := range names {
@@ -108,50 +158,92 @@ func Select(names []string) ([]Technique, error) {
 	}
 
 	var out []Technique
-	for _, t := range registry {
-		if wanted[t.Name()] {
-			out = append(out, t)
+	for _, name := range orderedNames() {
+		if wanted[name] {
+			out = append(out, registry[name])
 		}
 	}
 	return out, nil
 }
 
-// Permute runs every technique over the seed's SLD and returns the deduplicated
+// Permute runs every technique over the seed and returns the deduplicated
 // candidate set.
 //
 // Ordering is deterministic: techniques are applied in the order given, and
 // each technique's own output order is preserved. A candidate produced by more
 // than one technique is attributed to the first one that produced it, and the
 // seed itself is never returned as a candidate.
+//
+// Most techniques only vary the SLD label, keeping the seed's own suffix; a
+// technique implementing LabelBySuffix additionally reads the seed's suffix
+// (homoglyph, gating its Unicode substitutions by TLD); a technique
+// implementing SuffixSwap varies the suffix instead, keeping the seed's own
+// SLD (TLD swap). Callers select techniques by name via Select, so which of
+// these a caller gets is a property of the technique, not something the
+// caller chooses.
 func Permute(seed Seed, techniques []Technique) []Candidate {
 	var candidates []Candidate
 	seen := make(map[string]bool)
 
 	for _, t := range techniques {
-		for _, sld := range t.Permute(seed.SLD) {
-			if sld == seed.SLD || !ValidLabel(sld) {
-				continue
+		switch tech := t.(type) {
+		case SuffixSwap:
+			for _, suffix := range tech.PermuteSuffixes(seed.Suffix) {
+				addCandidate(seed, t, seed.SLD, suffix, seen, &candidates)
 			}
-			registrable := sld + "." + seed.Suffix
-			if seen[registrable] {
-				continue
+		case LabelBySuffix:
+			for _, sld := range tech.PermuteWithSuffix(seed.SLD, seed.Suffix) {
+				addCandidate(seed, t, sld, seed.Suffix, seen, &candidates)
 			}
-			seen[registrable] = true
-
-			domain := registrable
-			if seed.Subdomain != "" {
-				domain = seed.Subdomain + "." + registrable
+		default:
+			for _, sld := range t.Permute(seed.SLD) {
+				addCandidate(seed, t, sld, seed.Suffix, seen, &candidates)
 			}
-			candidates = append(candidates, Candidate{
-				Domain:      domain,
-				Registrable: registrable,
-				SLD:         sld,
-				Suffix:      seed.Suffix,
-				Technique:   t.Name(),
-			})
 		}
 	}
 	return candidates
+}
+
+// addCandidate validates and appends one (sld, suffix) pair to candidates,
+// deduping on the resulting registrable domain and converting the label to
+// its DNS wire form.
+//
+// The wire-form conversion happens here rather than in each technique so
+// every technique — SLD-mutating or suffix-mutating — gets it for free:
+// today only homoglyph produces non-ASCII labels, but converting
+// unconditionally means a future technique cannot forget it.
+func addCandidate(seed Seed, t Technique, sld, suffix string, seen map[string]bool, candidates *[]Candidate) {
+	if !ValidLabel(sld) || !validSuffix(suffix) {
+		return
+	}
+	ascii, ok := ToASCII(sld)
+	if !ok {
+		return
+	}
+	if ascii == seed.SLD && suffix == seed.Suffix {
+		// Equal to the seed itself: WithOriginal already guards against this
+		// independently, but refusing it here too means a stray duplicate
+		// never even reaches the dedup map.
+		return
+	}
+
+	registrable := ascii + "." + suffix
+	if seen[registrable] {
+		return
+	}
+	seen[registrable] = true
+
+	domain := registrable
+	if seed.Subdomain != "" {
+		domain = seed.Subdomain + "." + registrable
+	}
+	*candidates = append(*candidates, Candidate{
+		Domain:      domain,
+		Registrable: registrable,
+		SLD:         ascii,
+		Suffix:      suffix,
+		Technique:   t.Name(),
+	})
 }
 
 // Original returns the seed's own row, shaped like a candidate.
@@ -205,6 +297,22 @@ func ValidLabel(s string) bool {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
 		case r > 127:
 		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validSuffix reports whether s can be a public suffix: one or more
+// DNS-legal labels separated by dots, such as "com" or "co.uk". It exists
+// separately from ValidLabel because a suffix, unlike an SLD, is allowed to
+// contain dots.
+func validSuffix(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, label := range strings.Split(s, ".") {
+		if !ValidLabel(label) {
 			return false
 		}
 	}

@@ -18,12 +18,18 @@ import (
 )
 
 // scriptedResolver answers NOERROR with an A record for the names in
-// registered, and NXDOMAIN for everything else.
+// registered, and NXDOMAIN for everything else. Names in fail return an error
+// instead, standing in for a lookup that never got an answer — which is not
+// the same as one that answered "no such domain".
 type scriptedResolver struct {
 	registered map[string]bool
+	fail       map[string]bool
 }
 
 func (s scriptedResolver) Query(_ context.Context, name string, qtype uint16) (*dns.Msg, error) {
+	if s.fail[strings.TrimSuffix(dns.Fqdn(name), ".")] {
+		return nil, errors.New("scripted resolution failure")
+	}
 	m := new(dns.Msg)
 	if !s.registered[strings.TrimSuffix(dns.Fqdn(name), ".")] {
 		m.Rcode = dns.RcodeNameError
@@ -118,7 +124,9 @@ func TestScanRendersTable(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
-	stdout, _, err := run(t, "scan", "example.com")
+	// --show-unregistered because the assertions below cover both a registered
+	// and an unregistered candidate's rendering.
+	stdout, _, err := run(t, "scan", "example.com", "--show-unregistered")
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -143,7 +151,7 @@ func TestScanRendersJSON(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
-	stdout, _, err := run(t, "scan", "example.com", "--output", "json")
+	stdout, _, err := run(t, "scan", "example.com", "--output", "json", "--technique", "omission")
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}

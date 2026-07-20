@@ -9,9 +9,12 @@ verdict you record once is never asked of you again.
 
 ## Status
 
-One permutation technique (omission), serial resolution, table/JSON/NDJSON output. Scans persist to
-local SQLite with cross-scan diff (`new`/`changed`/`unchanged`/`gone`) and persistent triage state.
-The remaining four techniques, concurrency, wildcard detection and scan profiles are still to come.
+Five permutation techniques (omission, transposition, keyboard adjacency, TLD swap, homoglyph),
+concurrent resolution under a QPS ceiling, per-zone wildcard detection, and table/JSON/NDJSON output.
+Scans persist to local SQLite with cross-scan diff (`new`/`changed`/`unchanged`/`gone`) and persistent
+triage state.
+
+Scan profiles, a config file, and enrichment links are still to come.
 
 ## Quickstart
 
@@ -41,17 +44,57 @@ Global flags:
       --resolver string   upstream DNS resolver as host[:port] (default: the system resolver)
       --timeout duration  per-query DNS timeout (default 3s)
       --db string         scan database path (default: yatt/yatt.db under the user config dir)
+      --concurrency int   how many candidates to resolve at once (default 20)
+      --qps float         cap DNS queries per second across all workers (0 for unlimited)
   -v, --verbose           log scan progress to stderr
+
+scan flags:
+      --show-unregistered   also report candidates nobody has registered
+      --technique strings   techniques to run: omission, transposition, keyboard, tld, homoglyph
+                            (default: all)
+      --tld-profile string  TLD list the tld technique swaps against: common|full (default "common")
+      --tld-file string     custom TLD list, one per line; overrides --tld-profile
+      --limit int           cap the total candidate count (0 for unlimited)
+      --status strings          report only candidates with these triage statuses
+      --exclude-status strings  report every candidate except those with these statuses
 ```
 
 ```sh
 yatt scan example.com
-yatt scan example.com --output json | jq '.[] | select(.registered)'
+yatt scan example.com --show-unregistered
+yatt scan example.com --technique omission,homoglyph --limit 50
+yatt scan example.com --output json | jq '.[] | select(.has_mx)'
 yatt scan example.com --resolver 1.1.1.1 --timeout 5s
 ```
 
 Machine-readable output goes to stdout and progress goes to stderr, so piping to `jq` stays clean
 even with `--verbose`.
+
+## Registered candidates only, registered candidates first
+
+A scan reports only the candidates somebody has actually registered, and lists them ahead of
+everything else. A `--tld-profile full` run generates several hundred names, nearly all of which have
+never existed; the handful that someone took is the entire finding.
+
+```sh
+yatt scan example.com                       # only what is registered
+yatt scan example.com --show-unregistered   # everything, registered first
+```
+
+Two kinds of row survive the default regardless:
+
+- **The seed's own row**, on the same reasoning that exempts it from `--status`: it is the baseline
+  the candidates are read against.
+- **Any candidate whose lookup failed.** Nothing answered, which is not the same as the domain being
+  free — dropping those would turn a partially-failed scan into a confidently short one. The failure
+  is reported in the row's `error` field.
+
+Ordering is a property of the report only. The sort is stable and the seed stays pinned to the first
+row, so candidates keep the permutation engine's nearest-first order within each group and two scans
+over identical answers still render identically — which is what the diff feature rests on. Nothing
+here changes what was resolved or recorded: `--show-unregistered` re-reads the same stored scan.
+
+Run with `--verbose` to see how many rows the default hid.
 
 ## The seed is the first row
 
@@ -62,7 +105,8 @@ second lookup.
 
 It is recorded and diffed like a candidate too, so a change to the real domain's own NS or MX is
 surfaced by the next scan. It is *not* counted as a candidate in `yatt history`, it is never hidden
-by `--status`/`--exclude-status`, and it carries no triage status of its own unless you record one:
+by `--status`/`--exclude-status` or by the registered-only default even when the seed itself does not
+resolve, and it carries no triage status of its own unless you record one:
 `new` means "nobody has judged this yet", which is a statement about a backlog the protected domain
 does not belong in.
 
@@ -138,8 +182,10 @@ devbox run lint     # golangci-lint run
 ```text
 cmd/                 Cobra commands
 pkg/engine/          permutation techniques and seed parsing (reusable outside the CLI)
+pkg/engine/data/     generated keyboard, homoglyph and TLD tables (see PROVENANCE.md)
 internal/resolver/   miekg/dns wrapper; the registered/unregistered signal
-internal/scan/       orchestration: permute -> resolve -> persist -> diff -> triage
+internal/scan/       orchestration: permute -> resolve -> persist -> diff -> triage -> report
+internal/wildcard/   per-zone catch-all detection
 internal/store/      database/sql repository over SQLite; goose migrations (embed.FS)
 internal/triage/     triage status vocabulary and transition rules
 internal/render/     table / JSON / NDJSON renderers
@@ -155,3 +201,8 @@ cutover, so nothing is allowed to depend on SQLite specifics.
 The permutation algorithms are reimplemented in Go with reference to
 [dnstwist](https://github.com/elceef/dnstwist) (Apache-2.0) and
 [ail-typo-squatting](https://github.com/typosquatter/ail-typo-squatting) (BSD-2-Clause).
+
+The homoglyph tables are derived from the Unicode Consortium's
+[`confusables.txt`](https://www.unicode.org/Public/security/latest/confusables.txt), and the full TLD
+list from the [IANA Root Zone Database](https://data.iana.org/TLD/tlds-alpha-by-domain.txt).
+`pkg/engine/data/PROVENANCE.md` records the source behind every generated table.

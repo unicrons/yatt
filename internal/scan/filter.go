@@ -1,6 +1,10 @@
 package scan
 
-import "github.com/andoniaf/yatt/internal/triage"
+import (
+	"sort"
+
+	"github.com/andoniaf/yatt/internal/triage"
+)
 
 // TriageFilter selects which findings to report by their standing verdict.
 //
@@ -53,6 +57,54 @@ func (f TriageFilter) Apply(findings []Finding) []Finding {
 			out = append(out, finding)
 		}
 	}
+	return out
+}
+
+// HideUnregistered drops candidates nobody has registered, preserving the
+// order of those it keeps.
+//
+// This is the report's default because an unregistered look-alike is the
+// overwhelming majority of any candidate set — a `--tld-profile full` scan
+// generates hundreds of names that have never existed — and none of them is
+// actionable. What an analyst is looking for is the handful somebody actually
+// took.
+//
+// Two kinds of row survive regardless of their registered signal:
+//
+//   - The seed's own row, on the same reasoning that exempts it from the triage
+//     filter: it is the baseline the candidates are read against.
+//   - Any candidate whose resolution failed. Registered is false there because
+//     nothing answered, not because the domain is provably unregistered, and
+//     silently dropping those would turn a partially-failed scan into a
+//     confidently short one.
+func HideUnregistered(findings []Finding) []Finding {
+	out := make([]Finding, 0, len(findings))
+	for _, finding := range findings {
+		if finding.IsOriginal() || finding.Registered || finding.Error != "" {
+			out = append(out, finding)
+		}
+	}
+	return out
+}
+
+// RegisteredFirst reorders a report so registered candidates lead it, and
+// returns a new slice rather than shuffling the caller's.
+//
+// The sort is stable and the seed is pinned to the front, so this reorders the
+// report without disturbing the two properties the rest of the tool rests on:
+// candidates keep the permutation engine's nearest-first order within each
+// group, and the seed stays the first row in every format. It is applied to the
+// reported slice only, never to what was persisted, so the stored scan — and
+// therefore the next run's diff — is unaffected by how this run was displayed.
+func RegisteredFirst(findings []Finding) []Finding {
+	out := make([]Finding, len(findings))
+	copy(out, findings)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].IsOriginal() != out[j].IsOriginal() {
+			return out[i].IsOriginal()
+		}
+		return out[i].Registered && !out[j].Registered
+	})
 	return out
 }
 

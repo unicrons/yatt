@@ -91,7 +91,7 @@ func TestScanReportsTheSeedFirstInEveryFormat(t *testing.T) {
 				"xample.com":  true,
 			}})
 
-			candidate, technique := tt.first(t, mustRun(t, "scan", "example.com", "--output", tt.format))
+			candidate, technique := tt.first(t, mustRun(t, "scan", "example.com", "--output", tt.format, "--technique", "omission"))
 			if candidate != "example.com" {
 				t.Errorf("first row = %q, want the seed example.com", candidate)
 			}
@@ -108,7 +108,8 @@ func TestScanDoesNotDuplicateTheSeed(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"example.com": true}})
 
-	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	findings := decodeFindings(t, mustRun(t,
+		"scan", "example.com", "--output", "json", "--technique", "omission", "--show-unregistered"))
 
 	if len(findings) != seedCandidateCount+1 {
 		t.Fatalf("scan reported %d rows, want %d candidates plus the seed: %v",
@@ -135,7 +136,7 @@ func TestScanResolvesTheSeedLikeACandidate(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"example.com": true}})
 
-	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--technique", "omission"))
 	seed := findingFor(t, findings, "example.com")
 
 	if !seed.IsOriginal() {
@@ -192,10 +193,12 @@ func TestScanKeepsTheSeedThroughTriageFiltering(t *testing.T) {
 
 			// Only the candidate is judged: the seed's own verdict stays blank,
 			// which is what makes these filters ones that would otherwise drop it.
-			mustRun(t, "scan", "example.com")
+			mustRun(t, "scan", "example.com", "--technique", "omission")
 			mustRun(t, "triage", "example.com", "xample.com", "--status", "owned")
 
-			args := append([]string{"scan", "example.com", "--output", "json"}, tt.args...)
+			args := append([]string{
+				"scan", "example.com", "--output", "json", "--technique", "omission", "--show-unregistered",
+			}, tt.args...)
 			findings := decodeFindings(t, mustRun(t, args...))
 
 			if len(findings) == 0 || !findings[0].IsOriginal() {
@@ -217,11 +220,11 @@ func TestScanKeepsTheSeedWhenItsOwnVerdictIsExcluded(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"example.com": true}})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "example.com", "--status", "owned", "--note", "the real one")
 
 	findings := decodeFindings(t, mustRun(t,
-		"scan", "example.com", "--output", "json", "--exclude-status", "owned"))
+		"scan", "example.com", "--output", "json", "--exclude-status", "owned", "--technique", "omission"))
 
 	if len(findings) == 0 || !findings[0].IsOriginal() {
 		t.Fatalf("report = %v, want the seed kept despite the exclusion", candidateNames(findings))
@@ -237,7 +240,7 @@ func TestHistoryDoesNotCountTheSeedAsACandidate(t *testing.T) {
 		"xample.com":  true,
 	}})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 
 	stdout := mustRun(t, "history", "example.com", "--output", "json")
 	var scans []store.Scan
@@ -265,8 +268,8 @@ func TestDiffLeadsWithTheSeedWhenNothingChanged(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
-	mustRun(t, "scan", "example.com")
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 
 	withForbiddenResolver(t)
 
@@ -293,8 +296,8 @@ func TestDiffReportsNoChangesDespiteTheSeedRow(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
-	mustRun(t, "scan", "example.com")
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 
 	withForbiddenResolver(t)
 

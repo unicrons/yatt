@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -10,6 +12,7 @@ import (
 	"github.com/andoniaf/yatt/internal/resolver"
 	"github.com/andoniaf/yatt/internal/scan"
 	"github.com/andoniaf/yatt/internal/triage"
+	"github.com/andoniaf/yatt/pkg/engine"
 )
 
 // newResolver is the seam tests replace with a scripted resolver, so the scan
@@ -20,8 +23,13 @@ var newResolver = func(addr string, timeout time.Duration) (resolver.Resolver, e
 
 // scanOptions holds the flags local to the scan command.
 type scanOptions struct {
-	status        []string
-	excludeStatus []string
+	status           []string
+	excludeStatus    []string
+	technique        []string
+	tldProfile       string
+	tldFile          string
+	limit            int
+	showUnregistered bool
 }
 
 // triageFilter resolves the triage flags, rejecting the run if any status is
@@ -37,6 +45,35 @@ func (o *scanOptions) triageFilter() (scan.TriageFilter, error) {
 		return scan.TriageFilter{}, err
 	}
 	return scan.TriageFilter{Include: include, Exclude: exclude}, nil
+}
+
+// techniques resolves --technique to the concrete implementations, defaulting
+// to every registered technique when the flag was not given.
+func (o *scanOptions) techniques() ([]engine.Technique, error) {
+	if len(o.technique) == 0 {
+		return engine.All(), nil
+	}
+	return engine.Select(o.technique)
+}
+
+// tlds reads --tld-file, when set. A custom list always wins over
+// --tld-profile — resolved further down in scan.Run, once the seed's own
+// suffix is known — so this only needs to answer "was a file given".
+func (o *scanOptions) tlds() ([]string, error) {
+	if o.tldFile == "" {
+		return nil, nil
+	}
+	f, err := os.Open(o.tldFile)
+	if err != nil {
+		return nil, fmt.Errorf("--tld-file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	tlds, err := engine.ParseTLDList(f)
+	if err != nil {
+		return nil, fmt.Errorf("--tld-file: %w", err)
+	}
+	return tlds, nil
 }
 
 func newScanCmd(global *globalOptions) *cobra.Command {
@@ -58,6 +95,10 @@ func newScanCmd(global *globalOptions) *cobra.Command {
 			"Every scan is recorded, and each candidate is reported as new, changed, unchanged\n" +
 			"or gone relative to the previous scan of the same seed, alongside the standing\n" +
 			"triage verdict carried over from `yatt triage`.\n\n" +
+			"Only registered candidates are reported by default, listed before the rest, and\n" +
+			"--show-unregistered adds back the ones nobody has taken. A candidate whose\n" +
+			"resolution failed is always reported: nothing answered for it, which is not the\n" +
+			"same as it being unregistered.\n\n" +
 			"Filtering applies to the report only: every candidate is still resolved and\n" +
 			"recorded, so a filtered scan does not leave gaps in the seed's history.",
 		Args: cobra.ExactArgs(1),
@@ -71,6 +112,16 @@ func newScanCmd(global *globalOptions) *cobra.Command {
 		"report only candidates with these triage statuses ("+triage.List()+")")
 	flags.StringSliceVar(&opts.excludeStatus, "exclude-status", nil,
 		"report every candidate except those with these triage statuses")
+	flags.StringSliceVar(&opts.technique, "technique", nil,
+		"techniques to run, comma-separated ("+strings.Join(engine.Names(), ", ")+") (default: all)")
+	flags.StringVar(&opts.tldProfile, "tld-profile", engine.TLDProfileCommon,
+		fmt.Sprintf("TLD list the tld technique swaps against (%s|%s)", engine.TLDProfileCommon, engine.TLDProfileFull))
+	flags.StringVar(&opts.tldFile, "tld-file", "",
+		"custom TLD list, one per line; overrides --tld-profile")
+	flags.IntVar(&opts.limit, "limit", 0,
+		"cap the total candidate count after per-technique capping (0 for unlimited)")
+	flags.BoolVar(&opts.showUnregistered, "show-unregistered", false,
+		"also report candidates nobody has registered")
 
 	return cmd
 }
@@ -82,6 +133,16 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 	}
 
 	filter, err := opts.triageFilter()
+	if err != nil {
+		return err
+	}
+
+	techniques, err := opts.techniques()
+	if err != nil {
+		return err
+	}
+
+	tlds, err := opts.tlds()
 	if err != nil {
 		return err
 	}
@@ -106,9 +167,13 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 	result, err := scan.Run(cmd.Context(), scan.Options{
 		Seed:        seed,
 		Resolver:    dnsResolver,
+		Techniques:  techniques,
 		Store:       scanStore,
 		Concurrency: global.concurrency,
 		QPS:         global.qps,
+		TLDProfile:  opts.tldProfile,
+		TLDs:        tlds,
+		Limit:       opts.limit,
 	})
 	if err != nil {
 		return err
@@ -125,14 +190,30 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 	// describe what was actually resolved, or the next run's diff would report
 	// every filtered-out candidate as gone and then as new again.
 	reported := filter.Apply(findings)
+	triaged := len(findings) - len(reported)
+
+	// Registered candidates lead the report whether or not the unregistered
+	// ones are along for the ride, so the rows worth acting on are the rows
+	// read first.
+	unregistered := 0
+	if !opts.showUnregistered {
+		before := len(reported)
+		reported = scan.HideUnregistered(reported)
+		unregistered = before - len(reported)
+	}
+	reported = scan.RegisteredFirst(reported)
+
 	if err := renderer.Render(cmd.OutOrStdout(), reported); err != nil {
 		return err
 	}
 
 	if global.verbose {
 		summary := render.Summarize(reported)
-		if hidden := len(findings) - len(reported); hidden > 0 {
-			summary += fmt.Sprintf(" (%d hidden by --status/--exclude-status)", hidden)
+		if triaged > 0 {
+			summary += fmt.Sprintf(" (%d hidden by --status/--exclude-status)", triaged)
+		}
+		if unregistered > 0 {
+			summary += fmt.Sprintf(" (%d unregistered hidden; --show-unregistered to see them)", unregistered)
 		}
 		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), summary)
 	}

@@ -23,6 +23,12 @@ linters:
         linters:
           - gosec
           - revive
+      # Generated data tables: real TLD/language strings the misspell
+      # dictionary does not know (e.g. "immobilien", a real gTLD), not
+      # prose to spell-check.
+      - path: pkg/engine/data/tlds_iana\.go
+        linters:
+          - misspell
 
 formatters:
   enable:

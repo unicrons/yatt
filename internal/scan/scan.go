@@ -81,6 +81,16 @@ type Options struct {
 	// QPS caps how many DNS queries leave per second, across all workers. Zero
 	// means unlimited.
 	QPS float64
+	// TLDProfile names the TLD list the tld technique swaps against ("common"
+	// or "full"), when TLD swap is selected and TLDs is not set. Empty
+	// defaults to "common".
+	TLDProfile string
+	// TLDs overrides TLDProfile with an explicit TLD list, e.g. read from
+	// --tld-file. The seed's own suffix is still excluded automatically.
+	TLDs []string
+	// Limit bounds the total candidate count after per-technique capping.
+	// Zero or negative means unlimited.
+	Limit int
 }
 
 // Result is the outcome of a run.
@@ -120,11 +130,23 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if len(techniques) == 0 {
 		techniques = engine.All()
 	}
+	// TLD swap needs the seed's own suffix to resolve its profile, so this
+	// happens after ParseSeed rather than being the caller's job — a caller
+	// only needs to say "common" or "full", not know what that means for
+	// this particular seed.
+	techniques, err = engine.ResolveTLDs(techniques, seed.Suffix, opts.TLDProfile, opts.TLDs)
+	if err != nil {
+		return Result{}, err
+	}
 
 	// The seed leads its own report: it is resolved, recorded and diffed exactly
 	// like a candidate, so an analyst can read the candidates' signals against
 	// the real domain's instead of guessing what "normal" looks like for it.
-	candidates := engine.WithOriginal(seed, engine.Permute(seed, techniques))
+	//
+	// Capping happens before WithOriginal, not after, so the seed's own row —
+	// prepended unconditionally — can never be truncated away by --limit.
+	permuted := engine.Cap(engine.Permute(seed, techniques), engine.DefaultTechniqueCap, opts.Limit)
+	candidates := engine.WithOriginal(seed, permuted)
 
 	findings, err := resolveAll(ctx, opts, candidates)
 	result := Result{Seed: seed, Findings: findings}

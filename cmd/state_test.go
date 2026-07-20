@@ -37,7 +37,7 @@ func TestSecondScanReportsNothingNew(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
-	first := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	first := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--technique", "omission"))
 	if len(first) == 0 {
 		t.Fatal("first scan produced no findings")
 	}
@@ -45,7 +45,7 @@ func TestSecondScanReportsNothingNew(t *testing.T) {
 		t.Errorf("first scan marked %d of %d findings new, want all of them", got, len(first))
 	}
 
-	second := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	second := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--technique", "omission"))
 	if got := countDiff(second, scan.DiffNew); got != 0 {
 		t.Errorf("second scan marked %d findings new, want none", got)
 	}
@@ -62,10 +62,10 @@ func TestScanReportsASignalFlipAsChanged(t *testing.T) {
 	registered := map[string]bool{}
 	withFakeResolver(t, scriptedResolver{registered: registered})
 
-	mustRun(t, "scan", "example.com", "--output", "json")
+	mustRun(t, "scan", "example.com", "--output", "json", "--technique", "omission")
 
 	registered["xample.com"] = true
-	second := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	second := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--technique", "omission"))
 
 	var changed []string
 	for _, f := range second {
@@ -82,8 +82,8 @@ func TestHistoryListsEveryScan(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
-	mustRun(t, "scan", "example.com")
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 
 	stdout := mustRun(t, "history", "example.com", "--output", "json")
 	var scans []store.Scan
@@ -124,9 +124,9 @@ func TestDiffReportsTheDeltaWithoutResolving(t *testing.T) {
 	registered := map[string]bool{}
 	withFakeResolver(t, scriptedResolver{registered: registered})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	registered["xample.com"] = true
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 
 	// Any attempt to resolve from here on fails the test: diff must answer from
 	// the store alone.
@@ -149,7 +149,7 @@ func TestDiffOfASingleScanReportsEverythingNew(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 
 	stdout, stderr, err := run(t, "diff", "example.com", "--output", "json")
 	if err != nil {
@@ -201,10 +201,13 @@ func TestTriageSurvivesRescanning(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "owned", "--note", "defensive registration")
 
-	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	// --show-unregistered because this also asserts on an untriaged, and
+	// therefore unregistered, candidate below.
+	findings := decodeFindings(t, mustRun(t,
+		"scan", "example.com", "--output", "json", "--technique", "omission", "--show-unregistered"))
 
 	owned := findingFor(t, findings, "xample.com")
 	if owned.Triage != triage.StatusOwned {
@@ -228,10 +231,10 @@ func TestTriagingDoesNotCountAsAChange(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "malicious")
 
-	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--technique", "omission"))
 	if got := countDiff(findings, scan.DiffChanged); got != 0 {
 		t.Errorf("%d findings reported as changed after only a triage verdict was recorded, want 0", got)
 	}
@@ -241,21 +244,21 @@ func TestScanFiltersByTriageStatus(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "owned")
 
-	all := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	all := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--technique", "omission"))
 
 	// The seed rides along with every filtered report, so the candidate it
 	// selected is read against the real domain rather than in isolation.
-	only := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--status", "owned"))
+	only := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--status", "owned", "--technique", "omission"))
 	if len(only) != 2 || !only[0].IsOriginal() || only[1].Candidate != "xample.com" {
 		t.Errorf("--status owned reported %+v, want the seed then xample.com", candidateNames(only))
 	}
 
 	// The direction the manual workflow actually needs: everything except the
 	// domains we registered ourselves.
-	rest := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--exclude-status", "owned"))
+	rest := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--exclude-status", "owned", "--technique", "omission"))
 	if len(rest) != len(all)-1 {
 		t.Errorf("--exclude-status owned reported %d findings, want %d", len(rest), len(all)-1)
 	}
@@ -272,13 +275,13 @@ func TestScanFilteringDoesNotShrinkTheStoredScan(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "owned")
-	mustRun(t, "scan", "example.com", "--status", "owned")
+	mustRun(t, "scan", "example.com", "--status", "owned", "--technique", "omission")
 
 	// The filtered run recorded everything, so the following unfiltered run has
 	// nothing new to report.
-	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--technique", "omission"))
 	if got := countDiff(findings, scan.DiffNew); got != 0 {
 		t.Errorf("%d findings reported as new after a filtered scan, want 0 — filtering reached the store", got)
 	}
@@ -314,7 +317,7 @@ func TestTriageRejectsAnUnknownStatus(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 
 	_, _, err := run(t, "triage", "example.com", "xample.com", "--status", "spooky")
 	if err == nil {
@@ -348,7 +351,7 @@ func TestTriageListsRecordedVerdicts(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "owned", "--note", "ours")
 	mustRun(t, "triage", "example.com", "eample.com", "--status", "suspicious")
 
@@ -387,7 +390,7 @@ func TestTriageOverwritesAPreviousVerdict(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "suspicious", "--note", "looks parked")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "malicious", "--note", "phishing")
 
@@ -405,7 +408,7 @@ func TestTriageKeepsTheNoteWhenOnlyTheStatusChanges(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "suspicious", "--note", "registered last week")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "malicious")
 
@@ -427,7 +430,7 @@ func TestTriageNoteAloneKeepsTheStatus(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "watchlist")
 	mustRun(t, "triage", "example.com", "xample.com", "--note", "still watching")
 
@@ -441,7 +444,7 @@ func TestTriageWithoutAStatusOnAnUnjudgedCandidateFails(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 
 	_, _, err := run(t, "triage", "example.com", "xample.com", "--note", "no verdict yet")
 	if err == nil {
@@ -458,7 +461,7 @@ func TestTriageRefusesToResetACandidateToNew(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "benign")
 
 	_, _, err := run(t, "triage", "example.com", "xample.com", "--status", "new")
@@ -474,12 +477,12 @@ func TestTriageNormalizesTheCandidate(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	// A candidate copied out of a report with a trailing dot or in upper case
 	// must land on the row the scanner wrote.
 	mustRun(t, "triage", "Example.COM.", "XAMPLE.com.", "--status", "owned")
 
-	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--technique", "omission"))
 	if got := findingFor(t, findings, "xample.com").Triage; got != triage.StatusOwned {
 		t.Errorf("triage = %q, want %q — the candidate was not normalized", got, triage.StatusOwned)
 	}
@@ -494,8 +497,8 @@ func TestTriageRejectsACandidateThatIsNotTheSeedsAndNamesTheRightSeed(t *testing
 
 	// Two seeds, each with its own candidates. "nicrons.cloud" is the omission
 	// candidate of unicrons.cloud, and can never appear under example.com.
-	mustRun(t, "scan", "example.com")
-	mustRun(t, "scan", "unicrons.cloud")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
+	mustRun(t, "scan", "unicrons.cloud", "--technique", "omission")
 
 	_, _, err := run(t, "triage", "example.com", "nicrons.cloud", "--status", "owned", "--note", "ours")
 	if err == nil {
@@ -522,7 +525,7 @@ func TestTriageRejectsACandidateNoScanHasEverProduced(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 
 	_, _, err := run(t, "triage", "example.com", "totally-unrelated.test", "--status", "malicious")
 	if err == nil {
@@ -556,7 +559,7 @@ func TestTriageOnASeedWithNoScansBlamesTheMissingHistory(t *testing.T) {
 
 	// A mistyped seed usually looks exactly like an unscanned one, so the
 	// suggestion still rides along when there is a seed to suggest.
-	mustRun(t, "scan", "unicrons.cloud")
+	mustRun(t, "scan", "unicrons.cloud", "--technique", "omission")
 
 	_, _, err = run(t, "triage", "unicorns.cloud", "nicrons.cloud", "--status", "benign")
 	if err == nil {
@@ -590,10 +593,10 @@ func TestTriageAcceptsTheSeedItself(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"example.com": true}})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "example.com", "--status", "owned", "--note", "the real one")
 
-	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json"))
+	findings := decodeFindings(t, mustRun(t, "scan", "example.com", "--output", "json", "--technique", "omission"))
 	if got := findingFor(t, findings, "example.com").Triage; got != triage.StatusOwned {
 		t.Errorf("seed row triage = %q, want %q", got, triage.StatusOwned)
 	}
@@ -607,9 +610,9 @@ func TestDiffCarriesTriageStatus(t *testing.T) {
 	registered := map[string]bool{}
 	withFakeResolver(t, scriptedResolver{registered: registered})
 
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	registered["xample.com"] = true
-	mustRun(t, "scan", "example.com")
+	mustRun(t, "scan", "example.com", "--technique", "omission")
 	mustRun(t, "triage", "example.com", "xample.com", "--status", "malicious")
 
 	withForbiddenResolver(t)
