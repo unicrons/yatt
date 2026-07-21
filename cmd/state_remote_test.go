@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -73,6 +76,128 @@ func TestCommandsAbortWhenTheRemoteIsLocked(t *testing.T) {
 	for _, want := range []string{"locked", `operation "scan"`, "yatt state unlock"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("lock abort error missing %q: %v", want, err)
+		}
+	}
+}
+
+// runWithInput is run with a scripted stdin, for commands that prompt.
+func runWithInput(t *testing.T, input string, args ...string) (string, string, error) {
+	t.Helper()
+
+	var stdout, stderr bytes.Buffer
+	root := NewRootCmd()
+	root.SetArgs(args)
+	root.SetIn(strings.NewReader(input))
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+
+	err := root.Execute()
+	return stdout.String(), stderr.String(), err
+}
+
+func seedLock(t *testing.T, fake *remotetest.Fake) {
+	t.Helper()
+	if _, err := remote.Open(context.Background(), fake, remoteDBURL, "scan"); err != nil {
+		t.Fatalf("seeding the lock: %v", err)
+	}
+}
+
+func TestStateUnlockAsksBeforeClearing(t *testing.T) {
+	fake := withFakeRemote(t)
+	seedLock(t, fake)
+
+	// A declined prompt leaves the lock alone.
+	stdout, _, err := runWithInput(t, "n\n", "state", "unlock", "--db", remoteDBURL)
+	if err != nil {
+		t.Fatalf("declined unlock: %v", err)
+	}
+	if _, ok := fake.Objects[remoteLockKey]; !ok {
+		t.Fatalf("declined unlock still cleared the lock")
+	}
+	if !strings.Contains(stdout, `operation "scan"`) {
+		t.Errorf("unlock did not show the holder before asking:\n%s", stdout)
+	}
+
+	stdout, _, err = runWithInput(t, "y\n", "state", "unlock", "--db", remoteDBURL)
+	if err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+	if _, ok := fake.Objects[remoteLockKey]; ok {
+		t.Errorf("lock still present after a confirmed unlock:\n%s", stdout)
+	}
+}
+
+func TestStateUnlockForceSkipsThePrompt(t *testing.T) {
+	fake := withFakeRemote(t)
+	seedLock(t, fake)
+
+	// No stdin at all: --force must not read one.
+	stdout, _, err := run(t, "state", "unlock", "--force", "--db", remoteDBURL)
+	if err != nil {
+		t.Fatalf("unlock --force: %v", err)
+	}
+	if _, ok := fake.Objects[remoteLockKey]; ok {
+		t.Errorf("lock still present after unlock --force:\n%s", stdout)
+	}
+}
+
+func TestStateUnlockWithNothingHeld(t *testing.T) {
+	withFakeRemote(t)
+
+	stdout, _, err := run(t, "state", "unlock", "--db", remoteDBURL)
+	if err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+	if !strings.Contains(stdout, "no lock is held") {
+		t.Errorf("unlock on nothing = %q, want a friendly no-op", stdout)
+	}
+}
+
+func TestStatePushAndPull(t *testing.T) {
+	fake := withFakeRemote(t)
+
+	local := filepath.Join(t.TempDir(), "yatt.db")
+	if err := os.WriteFile(local, []byte("database bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := run(t, "state", "push", local, "--db", remoteDBURL); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if !bytes.Equal(fake.Objects[remoteDBKey].Body, []byte("database bytes")) {
+		t.Fatalf("push did not upload the local file")
+	}
+
+	// A second push must not clobber what is now the shared database.
+	if _, _, err := run(t, "state", "push", local, "--db", remoteDBURL); err == nil ||
+		!strings.Contains(err.Error(), "--force") {
+		t.Errorf("second push = %v, want a --force refusal", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "copy.db")
+	if _, _, err := run(t, "state", "pull", dest, "--db", remoteDBURL); err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, []byte("database bytes")) {
+		t.Errorf("pulled copy does not match the remote database")
+	}
+}
+
+func TestStateCommandsRequireARemoteDatabase(t *testing.T) {
+	withFakeRemote(t)
+
+	for _, args := range [][]string{
+		{"state", "unlock", "--db", "/tmp/yatt.db"},
+		{"state", "push", "--db", ""},
+		{"state", "pull", "copy.db", "--db", "yatt.db"},
+	} {
+		_, _, err := run(t, args...)
+		if err == nil || !strings.Contains(err.Error(), "s3://") {
+			t.Errorf("%v = %v, want an error demanding an s3:// --db", args, err)
 		}
 	}
 }
