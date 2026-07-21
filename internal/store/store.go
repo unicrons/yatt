@@ -10,10 +10,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/andoniaf/yatt/internal/triage"
+	"github.com/andoniaf/yatt/pkg/engine"
 )
 
 // Scan is one recorded run against a seed domain.
@@ -123,16 +123,22 @@ type Store interface {
 }
 
 // NormalizeSeed is the canonical form a seed is keyed by, so "Example.COM." and
-// "example.com" share one history.
+// "example.com" share one history. The fold goes through engine.NormalizeDomain
+// so IDN spellings converge too: the scanner stores and queries DNS wire
+// forms, and without the fold "münchen.de" and "xn--mnchen-3ya.de" — the same
+// domain, and the second is what the scan report prints — would key two
+// disjoint histories.
 func NormalizeSeed(seed string) string {
-	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(seed)), ".")
+	return engine.NormalizeDomain(seed)
 }
 
 // NormalizeCandidate is the canonical form a candidate is keyed by.
 //
 // It is deliberately the same normalization as NormalizeSeed — both are domain
-// names — so a verdict typed as "XAMPLE.COM." lands on the row the scanner
-// wrote as "xample.com" instead of creating a second, invisible one.
+// names — so a verdict typed as "XAMPLE.COM." (or as a Unicode homoglyph
+// copied from a browser's URL bar) lands on the row the scanner wrote as
+// "xample.com" (or its "xn--" wire form) instead of creating a second,
+// invisible one.
 func NormalizeCandidate(candidate string) string {
 	return NormalizeSeed(candidate)
 }

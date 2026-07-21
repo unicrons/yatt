@@ -89,6 +89,30 @@ func TestTriageFilterApply(t *testing.T) {
 	}
 }
 
+// The report promises that a candidate whose resolution failed is always
+// shown. An errored row carries the implicit "new" status, so without an
+// exemption `--status malicious` would silently eat it and a partially-failed
+// scan would render as confidently complete.
+func TestTriageFilterKeepsErroredRows(t *testing.T) {
+	findings := []scan.Finding{
+		{Candidate: "a.com", Triage: triage.StatusMalicious},
+		{Candidate: "b.com", Triage: triage.StatusNew, Error: "query NS b.com: i/o timeout"},
+		{Candidate: "c.com", Triage: triage.StatusNew},
+	}
+	filter := scan.TriageFilter{Include: []triage.Status{triage.StatusMalicious}}
+
+	got := candidates(filter.Apply(findings))
+	want := []string{"a.com", "b.com"}
+	if len(got) != len(want) {
+		t.Fatalf("Apply() = %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("Apply()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 // An unset verdict is what a stateless run produces. Treating it as unjudged
 // rather than as unmatchable keeps `--status new` honest and stops a filtered
 // stateless run from silently reporting nothing.

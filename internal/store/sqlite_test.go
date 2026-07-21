@@ -303,6 +303,87 @@ func TestSeedsAreNormalized(t *testing.T) {
 	}
 }
 
+// The scanner stores and queries DNS wire forms, so the Unicode spelling of
+// an IDN seed and its punycode form are the same domain and must share one
+// history — the report even prints the punycode form for a Unicode seed, so
+// re-scanning what the report showed must not start from scratch.
+func TestSeedKeysFoldIDNSpellings(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	if _, err := s.RecordScan(ctx, "münchen.de", "", nil); err != nil {
+		t.Fatalf("RecordScan: %v", err)
+	}
+
+	scans, err := s.ListScans(ctx, "xn--mnchen-3ya.de")
+	if err != nil {
+		t.Fatalf("ListScans: %v", err)
+	}
+	if len(scans) != 1 {
+		t.Errorf("got %d scans for the punycode spelling, want 1 — IDN normalization forked the history", len(scans))
+	}
+}
+
+// A verdict typed with the Unicode spelling of a homoglyph candidate must
+// land on the row the scanner stored in punycode, or the verdict is written
+// under a key no scan lookup ever reads.
+func TestTriageKeysFoldIDNSpellings(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	if _, err := s.SetTriage(ctx, "example.com", "exаmple.com", triage.StatusMalicious, ""); err != nil {
+		t.Fatalf("SetTriage: %v", err)
+	}
+
+	verdicts, err := s.GetTriage(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("GetTriage: %v", err)
+	}
+	// "exаmple.com" carries a Cyrillic а; its wire form is what a scan stores.
+	if _, ok := verdicts["xn--exmple-4nf.com"]; !ok {
+		t.Errorf("verdict not keyed by the punycode form; keys = %v", keys(verdicts))
+	}
+}
+
+func keys(m map[string]store.Triage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// The zones being scanned are attacker-controlled, and miekg/dns renders a
+// comma inside a label literally, so a comma in an NS/MX name must survive
+// the round-trip instead of splitting into fabricated entries.
+func TestFindingsRoundTripACommaBearingRecord(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	hostile := store.Finding{
+		Candidate:  "xample.com",
+		Technique:  "omission",
+		Registered: true,
+		HasNS:      true,
+		NS:         []string{`evil,split.example`, "ns1.example"},
+	}
+	if _, err := s.RecordScan(ctx, "example.com", "", []store.Finding{hostile}); err != nil {
+		t.Fatalf("RecordScan: %v", err)
+	}
+
+	_, findings, err := s.LastScan(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("LastScan: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	got := findings[0].NS
+	if len(got) != 2 || got[0] != `evil,split.example` || got[1] != "ns1.example" {
+		t.Errorf("NS = %v, want the comma-bearing name intact", got)
+	}
+}
+
 func TestRecordScanRejectsAnEmptySeed(t *testing.T) {
 	if _, err := open(t).RecordScan(context.Background(), "   ", "", nil); err == nil {
 		t.Error("RecordScan(\"\") succeeded, want an error")

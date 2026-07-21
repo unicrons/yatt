@@ -145,7 +145,12 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	//
 	// Capping happens before WithOriginal, not after, so the seed's own row —
 	// prepended unconditionally — can never be truncated away by --limit.
-	permuted := engine.Cap(engine.Permute(seed, techniques), engine.DefaultTechniqueCap, opts.Limit)
+	//
+	// TLD swap is exempt from the per-technique cap: its candidate count is
+	// exactly the TLD list the user chose, and capping it would silently cut
+	// a `--tld-profile full` sweep to the first ~500 TLDs alphabetically.
+	// The explicit --limit still bounds it.
+	permuted := engine.Cap(engine.Permute(seed, techniques), engine.DefaultTechniqueCap, opts.Limit, engine.TechniqueTLD)
 	candidates := engine.WithOriginal(seed, permuted)
 
 	findings, err := resolveAll(ctx, opts, candidates)
@@ -211,7 +216,7 @@ func resolveOne(ctx context.Context, r resolver.Resolver, detector *wildcard.Det
 		Technique:   candidate.Technique,
 	}
 
-	signals, err := resolver.Signals(ctx, r, candidate.Domain)
+	signals, err := resolver.Signals(ctx, r, candidate.Domain, candidate.Registrable)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Finding{}, ctx.Err()

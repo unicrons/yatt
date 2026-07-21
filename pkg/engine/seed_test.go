@@ -143,3 +143,21 @@ func TestSeedString(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeDomain(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"  Example.COM.  ", "example.com"},
+		{"münchen.de", "xn--mnchen-3ya.de"},
+		{"xn--mnchen-3ya.de", "xn--mnchen-3ya.de"},
+		{"exаmple.com", "xn--exmple-4nf.com"}, // Cyrillic а
+		{"not-a-domain", "not-a-domain"},
+	}
+	for _, tt := range tests {
+		if got := engine.NormalizeDomain(tt.input); got != tt.want {
+			t.Errorf("NormalizeDomain(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

@@ -115,8 +115,8 @@ does not belong in.
 
 Every scan is recorded, so the second scan of a seed reports each candidate as `new`, `changed`,
 `unchanged` or `gone` against the previous one. "Changed" is defined over the boolean signals —
-registered, NS, MX, A — so a CDN rotating its addresses is not a change, but a candidate becoming
-registered or gaining MX is.
+registered, NS, MX, A, wildcard — so a CDN rotating its addresses is not a change, but a candidate
+becoming registered, gaining MX, or leaving a catch-all zone for real infrastructure is.
 
 Triage state is the other half. A verdict is keyed by seed and candidate rather than by scan, so it
 survives every future run:

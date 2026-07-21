@@ -88,7 +88,7 @@ func mustIP(s string) net.IP {
 func TestSignalsUnregistered(t *testing.T) {
 	fake := &fakeResolver{} // everything NXDOMAIN
 
-	got, err := resolver.Signals(context.Background(), fake, "example.com")
+	got, err := resolver.Signals(context.Background(), fake, "example.com", "example.com")
 	if err != nil {
 		t.Fatalf("Signals: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestSignalsRegisteredWithoutRecords(t *testing.T) {
 		{name: "example.com.", qtype: dns.TypeNS}: msgWithRcode(dns.RcodeSuccess),
 	}}
 
-	got, err := resolver.Signals(context.Background(), fake, "example.com")
+	got, err := resolver.Signals(context.Background(), fake, "example.com", "example.com")
 	if err != nil {
 		t.Fatalf("Signals: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestSignalsRegisteredMXOnly(t *testing.T) {
 		{name: "example.com.", qtype: dns.TypeMX}: mxMsg("example.com", "mail.example.net"),
 	}}
 
-	got, err := resolver.Signals(context.Background(), fake, "example.com")
+	got, err := resolver.Signals(context.Background(), fake, "example.com", "example.com")
 	if err != nil {
 		t.Fatalf("Signals: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestSignalsFullyResolving(t *testing.T) {
 		{name: "example.com.", qtype: dns.TypeMX}: mxMsg("example.com", "mail.example.net"),
 	}}
 
-	got, err := resolver.Signals(context.Background(), fake, "example.com")
+	got, err := resolver.Signals(context.Background(), fake, "example.com", "example.com")
 	if err != nil {
 		t.Fatalf("Signals: %v", err)
 	}
@@ -182,12 +182,12 @@ func TestSignalsFullyResolving(t *testing.T) {
 }
 
 func TestSignalsQueriesTheRegistrableDomain(t *testing.T) {
-	// The NS query must target the eTLD+1, never the full name and never a
-	// public suffix: "co.uk" always answers NOERROR, which would mark every
-	// candidate registered.
+	// The NS query must target the registrable domain the caller supplies,
+	// never the full name and never a public suffix: "co.uk" always answers
+	// NOERROR, which would mark every candidate registered.
 	fake := &fakeResolver{}
 
-	got, err := resolver.Signals(context.Background(), fake, "www.example.co.uk")
+	got, err := resolver.Signals(context.Background(), fake, "www.example.co.uk", "example.co.uk")
 	if err != nil {
 		t.Fatalf("Signals: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestSignalsServerFailureIsAnError(t *testing.T) {
 		{name: "example.com.", qtype: dns.TypeNS}: msgWithRcode(dns.RcodeServerFailure),
 	}}
 
-	got, err := resolver.Signals(context.Background(), fake, "example.com")
+	got, err := resolver.Signals(context.Background(), fake, "example.com", "example.com")
 	if err == nil {
 		t.Fatal("Signals succeeded, want an error for SERVFAIL")
 	}
@@ -222,19 +222,58 @@ func TestSignalsServerFailureIsAnError(t *testing.T) {
 func TestSignalsTransportErrorPropagates(t *testing.T) {
 	fake := &fakeResolver{err: errors.New("i/o timeout")}
 
-	if _, err := resolver.Signals(context.Background(), fake, "example.com"); err == nil {
+	if _, err := resolver.Signals(context.Background(), fake, "example.com", "example.com"); err == nil {
 		t.Fatal("Signals succeeded, want the transport error")
 	}
 }
 
-func TestSignalsInvalidDomain(t *testing.T) {
+func TestSignalsRequiresARegistrableDomain(t *testing.T) {
 	fake := &fakeResolver{}
 
-	if _, err := resolver.Signals(context.Background(), fake, "not-a-domain"); err == nil {
-		t.Fatal("Signals succeeded, want a parse error")
+	if _, err := resolver.Signals(context.Background(), fake, "example.com", ""); err == nil {
+		t.Fatal("Signals succeeded, want an error for an empty registrable")
 	}
 	if len(fake.asked) != 0 {
-		t.Errorf("issued %d queries for an unparseable name, want 0", len(fake.asked))
+		t.Errorf("issued %d queries with no registrable to target, want 0", len(fake.asked))
+	}
+}
+
+// A public-suffix collision must not break resolution: seed "duckdns.com"
+// legitimately generates the candidate "duckdns.org", which is itself a PSL
+// entry, so any re-derivation of the eTLD+1 inside Signals would error out
+// before the first query and record a live look-alike as a permanent error.
+func TestSignalsResolvesAPublicSuffixCandidate(t *testing.T) {
+	fake := &fakeResolver{responses: map[question]*dns.Msg{
+		{name: "duckdns.org.", qtype: dns.TypeNS}: nsMsg("duckdns.org", "ns1.duckdns.org"),
+	}}
+
+	got, err := resolver.Signals(context.Background(), fake, "duckdns.org", "duckdns.org")
+	if err != nil {
+		t.Fatalf("Signals: %v", err)
+	}
+	if !got.Registered {
+		t.Error("Registered = false, want true")
+	}
+}
+
+// An RFC 7505 null MX ("0 .") is an explicit refusal of mail, not mail
+// capability; counting it would raise the tool's highest-alarm signal on
+// domains publishing the record that says the opposite.
+func TestSignalsIgnoresNullMX(t *testing.T) {
+	fake := &fakeResolver{responses: map[question]*dns.Msg{
+		{name: "example.com.", qtype: dns.TypeNS}: nsMsg("example.com", "ns1.example.net"),
+		{name: "example.com.", qtype: dns.TypeMX}: mxMsg("example.com", "."),
+	}}
+
+	got, err := resolver.Signals(context.Background(), fake, "example.com", "example.com")
+	if err != nil {
+		t.Fatalf("Signals: %v", err)
+	}
+	if got.HasMX {
+		t.Error("HasMX = true, want false for a null MX")
+	}
+	if len(got.MX) != 0 {
+		t.Errorf("MX = %v, want empty for a null MX", got.MX)
 	}
 }
 
@@ -245,6 +284,12 @@ func TestNewNormalizesResolverAddress(t *testing.T) {
 	}{
 		{"1.1.1.1", "1.1.1.1:53"},
 		{"1.1.1.1:5353", "1.1.1.1:5353"},
+		// Both IPv6 spellings must come out dialable: JoinHostPort brackets
+		// any host containing a colon, so brackets the user already typed
+		// must not be doubled into "[[::1]]:53".
+		{"::1", "[::1]:53"},
+		{"[::1]", "[::1]:53"},
+		{"[::1]:5353", "[::1]:5353"},
 	}
 
 	for _, tt := range tests {

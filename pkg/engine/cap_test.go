@@ -36,6 +36,33 @@ func TestCapPerTechnique(t *testing.T) {
 	}
 }
 
+func TestCapExemptsUncappedTechniques(t *testing.T) {
+	var candidates []engine.Candidate
+	candidates = append(candidates, makeCandidates("omission", 10)...)
+	candidates = append(candidates, makeCandidates("tld", 10)...)
+
+	got := engine.Cap(candidates, 3, 0, "tld")
+
+	counts := map[string]int{}
+	for _, c := range got {
+		counts[c.Technique]++
+	}
+	if counts["omission"] != 3 {
+		t.Errorf("omission count = %d, want 3 (still capped)", counts["omission"])
+	}
+	if counts["tld"] != 10 {
+		t.Errorf("tld count = %d, want 10 (exempt from the technique cap)", counts["tld"])
+	}
+}
+
+func TestCapGlobalLimitStillBoundsUncappedTechniques(t *testing.T) {
+	candidates := makeCandidates("tld", 10)
+
+	if got := engine.Cap(candidates, 3, 5, "tld"); len(got) != 5 {
+		t.Errorf("got %d candidates, want 5: the global limit applies even to uncapped techniques", len(got))
+	}
+}
+
 func TestCapPerTechniquePreservesOrder(t *testing.T) {
 	candidates := makeCandidates("omission", 5)
 	got := engine.Cap(candidates, 3, 0)

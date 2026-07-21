@@ -81,3 +81,18 @@ func (s Seed) String() string {
 func normalizeDomain(domain string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 }
+
+// NormalizeDomain returns the canonical ASCII form a domain is keyed by:
+// lowercased, trimmed, root dot stripped, and every label converted to its
+// DNS wire ("xn--") form. Folding to the wire form is what makes
+// "münchen.de" and "xn--mnchen-3ya.de" one key — the scanner stores and
+// queries wire forms, so a key that kept Unicode would silently split one
+// domain's history in two. A name whose labels cannot be converted is
+// returned merely lowercased, so malformed input still keys consistently.
+func NormalizeDomain(domain string) string {
+	name := normalizeDomain(domain)
+	if ascii, ok := toASCIIDomain(name); ok && ascii != "" {
+		return ascii
+	}
+	return name
+}

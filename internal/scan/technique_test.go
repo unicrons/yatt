@@ -137,7 +137,7 @@ func TestRunLimitBoundsTheCandidateCount(t *testing.T) {
 	}
 }
 
-func TestRunTechniqueCapBoundsAFanOutTechnique(t *testing.T) {
+func TestRunFullTLDSweepIsNotTruncated(t *testing.T) {
 	t.Parallel()
 
 	result, err := scan.Run(context.Background(), scan.Options{
@@ -150,11 +150,34 @@ func TestRunTechniqueCapBoundsAFanOutTechnique(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// The seed's own row, plus at most DefaultTechniqueCap tld candidates —
-	// unbounded, "full" alone would produce well over a thousand.
-	if len(result.Findings) > engine.DefaultTechniqueCap+1 {
-		t.Errorf("got %d findings, want at most %d (the per-technique cap plus the seed)",
+	// The whole point of `--tld-profile full` is sweeping the whole IANA list
+	// (well over a thousand TLDs), so the per-technique cap must not apply to
+	// TLD swap: capped, the sweep would silently stop in the alphabet around
+	// "g" while claiming full coverage.
+	if len(result.Findings) <= engine.DefaultTechniqueCap+1 {
+		t.Errorf("got %d findings, want more than %d — the full sweep must not be cut to the per-technique cap",
 			len(result.Findings), engine.DefaultTechniqueCap+1)
+	}
+}
+
+func TestRunLimitStillBoundsAFullTLDSweep(t *testing.T) {
+	t.Parallel()
+
+	result, err := scan.Run(context.Background(), scan.Options{
+		Seed:       "example.com",
+		Resolver:   alwaysNXDOMAIN{},
+		Techniques: []engine.Technique{engine.TLD{}},
+		TLDProfile: engine.TLDProfileFull,
+		Limit:      10,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Exempting TLD swap from the per-technique cap must not exempt it from
+	// the explicit --limit: that one the user asked for.
+	if len(result.Findings) != 11 { // the seed's own row, plus 10 candidates
+		t.Fatalf("got %d findings, want 11 (the seed plus the --limit of 10)", len(result.Findings))
 	}
 }
 

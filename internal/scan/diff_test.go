@@ -149,19 +149,38 @@ func TestDiffIgnoresRecordChurn(t *testing.T) {
 }
 
 // A failed lookup stores zero-valued signals next to its error. Comparing
-// those zeroes as answers would report a phantom lapse on the failure and a
-// phantom change back on recovery — a failed lookup is not evidence that
-// anything moved.
-func TestDiffTreatsErroredLookupsAsUnchanged(t *testing.T) {
+// those zeroes as answers would report a phantom lapse on the failure — but
+// the first clean observation after a failure is different: positive signals
+// there are news that would otherwise never appear in any diff, since the
+// next comparison is clean-vs-clean.
+func TestDiffErroredLookups(t *testing.T) {
 	registered := finding("xample.com", true, true, true, false)
+	unregistered := finding("xample.com", false, false, false, false)
 	errored := finding("xample.com", false, false, false, false)
 	errored.Error = "query NS xample.com: i/o timeout"
 
 	if got := scan.Diff([]scan.Finding{registered}, []scan.Finding{errored}); got.Findings[0].Diff != scan.DiffUnchanged {
 		t.Errorf("registered -> errored: diff = %q, want %q", got.Findings[0].Diff, scan.DiffUnchanged)
 	}
-	if got := scan.Diff([]scan.Finding{errored}, []scan.Finding{registered}); got.Findings[0].Diff != scan.DiffUnchanged {
-		t.Errorf("errored -> recovered: diff = %q, want %q", got.Findings[0].Diff, scan.DiffUnchanged)
+	if got := scan.Diff([]scan.Finding{errored}, []scan.Finding{registered}); got.Findings[0].Diff != scan.DiffChanged {
+		t.Errorf("errored -> registered: diff = %q, want %q", got.Findings[0].Diff, scan.DiffChanged)
+	}
+	if got := scan.Diff([]scan.Finding{errored}, []scan.Finding{unregistered}); got.Findings[0].Diff != scan.DiffUnchanged {
+		t.Errorf("errored -> unregistered: diff = %q, want %q", got.Findings[0].Diff, scan.DiffUnchanged)
+	}
+}
+
+// A candidate leaving a catch-all zone for real infrastructure can keep every
+// other boolean identical — registered and resolving before, registered and
+// resolving after — while flipping only the wildcard flag. That flip is the
+// exact transition wildcard detection exists to expose.
+func TestDiffReportsAWildcardFlip(t *testing.T) {
+	synthesized := finding("xample.com", true, true, true, false)
+	synthesized.Wildcard = true
+	taken := finding("xample.com", true, true, true, false)
+
+	if got := scan.Diff([]scan.Finding{synthesized}, []scan.Finding{taken}); got.Findings[0].Diff != scan.DiffChanged {
+		t.Errorf("wildcard -> real: diff = %q, want %q", got.Findings[0].Diff, scan.DiffChanged)
 	}
 }
 

@@ -42,18 +42,22 @@ func (f TriageFilter) Match(status triage.Status) bool {
 
 // Apply returns the findings that pass the filter, preserving their order.
 //
-// The seed's own row is exempt. It is the baseline every candidate is read
-// against, so a report that dropped it would answer "is this look-alike's mail
-// setup like the real domain's?" with nothing to compare to. The same exemption
-// should apply to the global --limit once capping lands: a cap is a bound on how
-// many candidates to show, not a reason to lose the row explaining them.
+// Two kinds of row are exempt, mirroring HideUnregistered:
+//
+//   - The seed's own row. It is the baseline every candidate is read against,
+//     so a report that dropped it would answer "is this look-alike's mail
+//     setup like the real domain's?" with nothing to compare to.
+//   - Any candidate whose resolution failed. The report promises that a
+//     failed lookup is always shown — nothing answered is not the same as
+//     nothing there — and a status filter silently eating errored rows would
+//     make a partially-failed scan render as confidently complete.
 func (f TriageFilter) Apply(findings []Finding) []Finding {
 	if f.Empty() {
 		return findings
 	}
 	out := make([]Finding, 0, len(findings))
 	for _, finding := range findings {
-		if finding.IsOriginal() || f.Match(finding.Triage) {
+		if finding.IsOriginal() || finding.Error != "" || f.Match(finding.Triage) {
 			out = append(out, finding)
 		}
 	}

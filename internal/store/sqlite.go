@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -29,9 +30,12 @@ import (
 // this file depends on the textual order being the chronological one.
 const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
-// listSeparator joins the record slices stored in a single TEXT column. DNS
-// names and IP addresses never contain a comma, so the encoding is lossless and
-// stays legible under `sqlite3 <db> .dump`.
+// listSeparator is the legacy encoding of the record slices stored in a
+// single TEXT column: a bare comma join. It is still understood on read, but
+// writes moved to JSON — DNS names can legally contain a comma (miekg/dns
+// renders one literally), and the zones being scanned are by definition
+// attacker-controlled, so a comma join would let a hostile NS/MX record
+// split into fabricated entries on read-back.
 const listSeparator = ","
 
 // SQLite is the Store backed by a local SQLite database file.
@@ -502,13 +506,33 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// joinList encodes a record slice as a JSON array, which round-trips any
+// byte a DNS answer can carry. An empty slice stays an empty string so the
+// column reads as "nothing" under `sqlite3 <db> .dump`.
 func joinList(values []string) string {
-	return strings.Join(values, listSeparator)
+	if len(values) == 0 {
+		return ""
+	}
+	// Marshalling a []string cannot fail.
+	encoded, _ := json.Marshal(values)
+	return string(encoded)
 }
 
+// splitList decodes a stored record list: JSON for rows written today, the
+// legacy comma join for rows written before the encoding changed. No DNS
+// name or IP address starts with "[", so the two are distinguishable.
 func splitList(value string) []string {
 	if value == "" {
 		return nil
+	}
+	if strings.HasPrefix(value, "[") {
+		var out []string
+		if err := json.Unmarshal([]byte(value), &out); err == nil {
+			if len(out) == 0 {
+				return nil
+			}
+			return out
+		}
 	}
 	return strings.Split(value, listSeparator)
 }

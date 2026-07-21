@@ -34,15 +34,21 @@ type DiffResult struct {
 // churn constantly on CDN- and cloud-hosted domains, and reporting every such
 // rotation as a change would bury the transitions an analyst actually cares
 // about: a candidate becoming registered, gaining MX, or gaining delegation.
+//
+// Wildcard is one of the booleans precisely because the others can sit
+// still while it flips: a candidate leaving a catch-all zone for real
+// infrastructure keeps registered/hasA and changes the only thing that
+// matters — someone actually took the name.
 type signals struct {
 	registered bool
 	hasNS      bool
 	hasA       bool
 	hasMX      bool
+	wildcard   bool
 }
 
 func signalsOf(f Finding) signals {
-	return signals{registered: f.Registered, hasNS: f.HasNS, hasA: f.HasA, hasMX: f.HasMX}
+	return signals{registered: f.Registered, hasNS: f.HasNS, hasA: f.HasA, hasMX: f.HasMX, wildcard: f.Wildcard}
 }
 
 // Diff compares the current findings against the previous scan's.
@@ -77,14 +83,24 @@ func Diff(prior, current []Finding) DiffResult {
 		switch {
 		case !ok:
 			out[i].Diff = DiffNew
-		case previous.Error != "" || out[i].Error != "":
+		case out[i].Error != "":
 			// A failed lookup stores its zero-valued signals alongside the
 			// error, and zeroes compared as answers would report a phantom
-			// lapse on the failure and a phantom change back on recovery. A
-			// finding that errored on either side is reported unchanged: the
-			// row still shows its error, but a lookup that failed is not
-			// evidence that anything moved.
+			// lapse. The row still shows its error, but a lookup that failed
+			// is not evidence that anything moved.
 			out[i].Diff = DiffUnchanged
+		case previous.Error != "":
+			// The previous lookup failed, so this is the first clean
+			// observation since. A positive signal here is news — a
+			// registration first seen right after a transient failure must
+			// not be absorbed as "unchanged", or it never appears in any
+			// diff. A clean all-zeroes answer matches what the errored row's
+			// zeroes implied, so only that direction stays quiet.
+			if signalsOf(out[i]) != (signals{}) {
+				out[i].Diff = DiffChanged
+			} else {
+				out[i].Diff = DiffUnchanged
+			}
 		case signalsOf(previous) != signalsOf(out[i]):
 			out[i].Diff = DiffChanged
 		default:

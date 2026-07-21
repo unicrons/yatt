@@ -11,12 +11,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
 	"golang.org/x/time/rate"
-
-	"github.com/andoniaf/yatt/pkg/engine"
 )
 
 // DefaultResolver is used when no resolver could be read from the system
@@ -57,6 +56,10 @@ type Client struct {
 	// attempts counts the first send, so 1 means no retry.
 	attempts int
 	backoff  time.Duration
+	// gate, when set by RateLimited, is waited on before every wire send —
+	// retries and TCP fallback included — so the configured QPS bounds
+	// packets actually leaving, not Query calls.
+	gate *rate.Limiter
 }
 
 // New returns a Client querying addr. A missing port defaults to 53. An empty
@@ -106,6 +109,9 @@ func (c *Client) Query(ctx context.Context, name string, qtype uint16) (*dns.Msg
 			backoff *= 2
 		}
 
+		if err := c.wait(ctx); err != nil {
+			return nil, fmt.Errorf("query %s %s: %w", dns.TypeToString[qtype], name, err)
+		}
 		resp, _, err := c.udp.ExchangeContext(ctx, m, c.addr)
 		if err != nil {
 			lastErr = err
@@ -122,6 +128,9 @@ func (c *Client) Query(ctx context.Context, name string, qtype uint16) (*dns.Msg
 
 		// Truncation means the answer exists but did not fit in a UDP datagram.
 		// Returning it as-is would under-report records; TCP has no such limit.
+		if err := c.wait(ctx); err != nil {
+			return nil, fmt.Errorf("query %s %s: %w", dns.TypeToString[qtype], name, err)
+		}
 		resp, _, err = c.tcp.ExchangeContext(ctx, m, c.addr)
 		if err != nil {
 			lastErr = err
@@ -134,6 +143,15 @@ func (c *Client) Query(ctx context.Context, name string, qtype uint16) (*dns.Msg
 	}
 
 	return nil, fmt.Errorf("query %s %s: %w", dns.TypeToString[qtype], name, lastErr)
+}
+
+// wait blocks until the rate limiter allows another wire send, or returns
+// immediately when no limiter is set.
+func (c *Client) wait(ctx context.Context) error {
+	if c.gate == nil {
+		return nil
+	}
+	return c.gate.Wait(ctx)
 }
 
 // sleep waits for d unless the context ends first.
@@ -160,6 +178,12 @@ const DefaultQPS = 0
 // The ceiling is applied by wrapping the Resolver rather than by pacing the
 // scan loop, so every query counts against it — including the wildcard probes,
 // which are issued from somewhere the scan loop cannot see.
+//
+// For the live Client the limiter gates every wire send, not every Query
+// call: a Query retries dropped packets and re-asks truncated answers over
+// TCP, and those extra packets fire exactly when the upstream resolver is
+// throttling — the one moment the ceiling must hold. Other Resolver
+// implementations are gated per Query, which is all their interface exposes.
 func RateLimited(r Resolver, qps float64) Resolver {
 	if qps <= 0 {
 		return r
@@ -167,7 +191,13 @@ func RateLimited(r Resolver, qps float64) Resolver {
 	// A burst of one keeps the spacing even. A larger burst would let a scan
 	// open with a spike at exactly the moment a resolver is most likely to
 	// start dropping it.
-	return &limitedResolver{inner: r, limiter: rate.NewLimiter(rate.Limit(qps), 1)}
+	limiter := rate.NewLimiter(rate.Limit(qps), 1)
+	if c, ok := r.(*Client); ok {
+		gated := *c
+		gated.gate = limiter
+		return &gated
+	}
+	return &limitedResolver{inner: r, limiter: limiter}
 }
 
 type limitedResolver struct {
@@ -204,6 +234,12 @@ func normalizeAddr(addr string) (string, error) {
 	if _, _, err := net.SplitHostPort(addr); err == nil {
 		return addr, nil
 	}
+	// A bracketed IPv6 address without a port ("[::1]") fails SplitHostPort
+	// with the brackets still on; JoinHostPort brackets any host containing a
+	// colon, so they must come off first or the result is "[[::1]]:53".
+	if strings.HasPrefix(addr, "[") && strings.HasSuffix(addr, "]") {
+		addr = addr[1 : len(addr)-1]
+	}
 	return net.JoinHostPort(addr, "53"), nil
 }
 
@@ -232,6 +268,14 @@ type Result struct {
 
 // Signals resolves the boolean signal set for domain.
 //
+// registrable is the eTLD+1 the NS query targets. The caller supplies it —
+// the engine computed it when the candidate was generated — rather than
+// Signals re-deriving it from domain, because a re-derivation through the
+// public suffix list misfires on candidates that collide with suffix
+// entries: a generated "duckdns.org" IS a public suffix, so eTLD+1 errors
+// out, and a custom TLD like "gov.xyz" would send the NS query to the
+// parent zone instead of the candidate.
+//
 // Registration is decided by the Rcode of an NS query at the registrable
 // domain, not by an A-record NXDOMAIN. The naive A-record test produces false
 // negatives on exactly the MX-only and delegation-only domains this tool exists
@@ -239,13 +283,11 @@ type Result struct {
 //
 // Unregistered names short-circuit: there is nothing to ask about a name that
 // does not exist, and they are the overwhelming majority of any candidate set.
-func Signals(ctx context.Context, r Resolver, domain string) (Result, error) {
-	seed, err := engine.ParseSeed(domain)
-	if err != nil {
-		return Result{}, err
+func Signals(ctx context.Context, r Resolver, domain, registrable string) (Result, error) {
+	if domain == "" || registrable == "" {
+		return Result{}, fmt.Errorf("resolver: empty domain or registrable (%q, %q)", domain, registrable)
 	}
-	registrable := seed.Registrable()
-	res := Result{Domain: seed.String(), Registrable: registrable}
+	res := Result{Domain: domain, Registrable: registrable}
 
 	nsResp, err := r.Query(ctx, registrable, dns.TypeNS)
 	if err != nil {
@@ -291,10 +333,19 @@ func Signals(ctx context.Context, r Resolver, domain string) (Result, error) {
 		return res, err
 	}
 	for _, rr := range mxResp.Answer {
-		if mx, ok := rr.(*dns.MX); ok {
-			res.HasMX = true
-			res.MX = append(res.MX, trimDot(mx.Mx))
+		mx, ok := rr.(*dns.MX)
+		if !ok {
+			continue
 		}
+		// An RFC 7505 null MX — exchange "." — is an explicit statement that
+		// the domain accepts no mail. Counting it as mail capability would
+		// flag defensively-registered domains with the tool's highest-alarm
+		// signal for publishing the record that says the opposite.
+		if mx.Mx == "." {
+			continue
+		}
+		res.HasMX = true
+		res.MX = append(res.MX, trimDot(mx.Mx))
 	}
 
 	return res, nil
