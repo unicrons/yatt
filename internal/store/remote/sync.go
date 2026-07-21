@@ -1,0 +1,167 @@
+package remote
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+)
+
+// download fetches the database object into path and returns its ETag. A
+// missing object is not an error but first use: no file is written and the
+// empty ETag tells the caller there is nothing to guard the eventual upload
+// against.
+func download(ctx context.Context, c Client, bucket, key, path string) (string, error) {
+	out, err := c.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return "", nil
+		}
+		return "", fmt.Errorf("downloading database s3://%s/%s: %w", bucket, key, err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	if err := writeFile(path, out.Body); err != nil {
+		return "", fmt.Errorf("writing database copy %s: %w", path, err)
+	}
+	return aws.ToString(out.ETag), nil
+}
+
+// writeFile streams r to path and syncs it, so the file the store opens is
+// complete on disk rather than sitting in page cache.
+func writeFile(path string, r io.Reader) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// ReadLock reports who currently holds the lock, without touching it.
+// ErrNoLock when nobody does.
+func ReadLock(ctx context.Context, c Client, rawURL string) (LockInfo, error) {
+	bucket, key, err := parseURL(rawURL)
+	if err != nil {
+		return LockInfo{}, err
+	}
+	return readLock(ctx, c, bucket, key)
+}
+
+// Unlock force-clears the lock and returns what was cleared. It exists for
+// exactly one situation — a process died holding the lock — and the caller is
+// expected to have confirmed that with the user, because clearing a live
+// holder's lock reopens the door to concurrent writers.
+func Unlock(ctx context.Context, c Client, rawURL string) (LockInfo, error) {
+	bucket, key, err := parseURL(rawURL)
+	if err != nil {
+		return LockInfo{}, err
+	}
+	info, err := readLock(ctx, c, bucket, key)
+	if err != nil {
+		return LockInfo{}, err
+	}
+	if err := releaseLock(ctx, c, bucket, key); err != nil {
+		return LockInfo{}, err
+	}
+	return info, nil
+}
+
+// Push uploads a local database file as the remote one — the migration path
+// from a local-only setup, and the recovery path after a failed upload. It
+// takes the lock like any writer. Without force it refuses to replace an
+// existing remote database, and the refusal is enforced by the conditional
+// write itself rather than by a look-then-write race.
+func Push(ctx context.Context, c Client, localPath, rawURL string, force bool) error {
+	bucket, key, err := parseURL(rawURL)
+	if err != nil {
+		return err
+	}
+
+	// A non-empty WAL sidecar means some process has the database open (or died
+	// without checkpointing); uploading just the main file would ship a
+	// database missing its latest transactions.
+	if info, err := os.Stat(localPath + "-wal"); err == nil && info.Size() > 0 {
+		return fmt.Errorf("%s has a non-empty WAL sidecar: close any yatt process using it before pushing", localPath)
+	}
+
+	file, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("opening local database: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	if err := acquireLock(ctx, c, bucket, key, rawURL, "state push"); err != nil {
+		return err
+	}
+	defer func() { _ = releaseLock(context.WithoutCancel(ctx), c, bucket, key) }()
+
+	in := &s3.PutObjectInput{
+		Bucket:      aws.String(bucket),
+		Key:         aws.String(key),
+		Body:        file,
+		ContentType: aws.String("application/vnd.sqlite3"),
+	}
+	if !force {
+		in.IfNoneMatch = aws.String("*")
+	}
+	if _, err := c.PutObject(ctx, in); err != nil {
+		if isConditionFailed(err) {
+			return fmt.Errorf("a remote database already exists at %s: pass --force to replace it", rawURL)
+		}
+		return fmt.Errorf("uploading database %s: %w", rawURL, err)
+	}
+	return nil
+}
+
+// Pull downloads the remote database to localPath. It takes no lock: a single
+// GET is atomic in S3, so the copy is a consistent snapshot even if a writer
+// is active — merely up to that writer's upload out of date.
+func Pull(ctx context.Context, c Client, rawURL, localPath string, force bool) error {
+	bucket, key, err := parseURL(rawURL)
+	if err != nil {
+		return err
+	}
+	if !force {
+		if _, err := os.Stat(localPath); err == nil {
+			return fmt.Errorf("%s already exists: pass --force to overwrite it", localPath)
+		}
+	}
+
+	out, err := c.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return fmt.Errorf("no remote database exists at %s", rawURL)
+		}
+		return fmt.Errorf("downloading database %s: %w", rawURL, err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	if force {
+		_ = os.Remove(localPath)
+	}
+	if err := writeFile(localPath, out.Body); err != nil {
+		return fmt.Errorf("writing %s: %w", localPath, err)
+	}
+	return nil
+}
