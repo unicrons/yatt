@@ -51,6 +51,7 @@ func TestPermuteAllTechniquesOrdersNearestFirst(t *testing.T) {
 	nearest := map[string]bool{
 		"omission": true, "transposition": true, "keyboard": true,
 		"addition": true, "hyphenation": true, "vowel-swap": true,
+		"bitsquatting": true,
 	}
 	fanOut := map[string]bool{"tld": true, "homoglyph": true}
 

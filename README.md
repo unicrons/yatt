@@ -9,7 +9,7 @@ verdict you record once is never asked of you again.
 
 ## Status
 
-Eight permutation techniques (omission, transposition, keyboard adjacency, addition, hyphenation, vowel swap, TLD swap, homoglyph),
+Nine permutation techniques (omission, transposition, keyboard adjacency, addition, hyphenation, vowel swap, bitsquatting, TLD swap, homoglyph),
 concurrent resolution under a QPS ceiling, per-zone wildcard detection, and table/JSON/NDJSON output.
 Scans persist to local SQLite with cross-scan diff (`new`/`changed`/`unchanged`/`gone`) and persistent
 triage state. Scan profiles, a config file, and enrichment links round out the first slice.
@@ -50,7 +50,7 @@ Global flags:
 
 scan flags:
       --show-unregistered       also report candidates nobody has registered
-      --technique strings       techniques to run: omission, transposition, keyboard, addition, hyphenation, vowel-swap, tld, homoglyph
+      --technique strings       techniques to run: omission, transposition, keyboard, addition, hyphenation, vowel-swap, bitsquatting, tld, homoglyph
                                 (default: all)
       --tld-profile string      TLD list the tld technique swaps against: common|full (default "common")
       --tld-file string         custom TLD list, one per line; overrides --tld-profile

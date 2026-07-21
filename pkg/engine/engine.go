@@ -76,7 +76,7 @@ var registry = map[string]Technique{}
 // keep the closest look-alikes first, and it is independent of registration
 // order — which Go source file happens to register a technique in its
 // init() must not be able to reorder a scan's output.
-var canonicalOrder = []string{"omission", "transposition", "keyboard", "addition", "hyphenation", "vowel-swap", "tld", "homoglyph"}
+var canonicalOrder = []string{"omission", "transposition", "keyboard", "addition", "hyphenation", "vowel-swap", "bitsquatting", "tld", "homoglyph"}
 
 // Register adds a technique to the registry. It panics on a duplicate name,
 // since that can only be a programming error.
