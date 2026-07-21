@@ -32,7 +32,7 @@ func runDiff(cmd *cobra.Command, global *globalOptions, seed string) error {
 		return err
 	}
 
-	scanStore, err := global.openStore()
+	scanStore, err := global.openStore(cmd)
 	if err != nil {
 		return err
 	}

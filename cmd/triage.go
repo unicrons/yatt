@@ -59,7 +59,7 @@ func runTriage(cmd *cobra.Command, global *globalOptions, opts *triageOptions, s
 		return err
 	}
 
-	scanStore, err := global.openStore()
+	scanStore, err := global.openStore(cmd)
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func runTriageList(cmd *cobra.Command, global *globalOptions, seed string) error
 		return err
 	}
 
-	scanStore, err := global.openStore()
+	scanStore, err := global.openStore(cmd)
 	if err != nil {
 		return err
 	}

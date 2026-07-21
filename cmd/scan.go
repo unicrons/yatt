@@ -248,7 +248,7 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 		return err
 	}
 
-	scanStore, err := global.openStore()
+	scanStore, err := global.openStore(cmd)
 	if err != nil {
 		return err
 	}

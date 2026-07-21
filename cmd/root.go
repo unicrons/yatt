@@ -14,6 +14,7 @@ import (
 	"github.com/andoniaf/yatt/internal/resolver"
 	"github.com/andoniaf/yatt/internal/scan"
 	"github.com/andoniaf/yatt/internal/store"
+	"github.com/andoniaf/yatt/internal/store/remote"
 )
 
 // newStore is the seam tests replace so a command test never touches the user's
@@ -21,6 +22,10 @@ import (
 var newStore = func(path string) (store.Store, error) {
 	return store.Open(path)
 }
+
+// newRemoteClient is the seam tests replace with an in-memory S3 fake, so a
+// command test never talks to a real endpoint.
+var newRemoteClient = remote.NewDefaultClient
 
 // globalOptions holds the flags declared on the root command and inherited by
 // every subcommand.
@@ -52,9 +57,18 @@ func (o *globalOptions) renderOptions() []render.Option {
 }
 
 // openStore opens the scan database, defaulting to a per-user location when
-// --db was not given.
-func (o *globalOptions) openStore() (store.Store, error) {
+// --db was not given. An s3:// value routes to the remote backend, which holds
+// a lock on the remote database for the duration of the command; the command
+// is needed to name the operation in that lock and to carry the context.
+func (o *globalOptions) openStore(cmd *cobra.Command) (store.Store, error) {
 	path := o.db
+	if remote.IsRemote(path) {
+		client, err := newRemoteClient(cmd.Context())
+		if err != nil {
+			return nil, err
+		}
+		return remote.Open(cmd.Context(), client, path, operation(cmd))
+	}
 	if path == "" {
 		var err error
 		if path, err = store.DefaultPath(); err != nil {
@@ -62,6 +76,13 @@ func (o *globalOptions) openStore() (store.Store, error) {
 		}
 	}
 	return newStore(path)
+}
+
+// operation names the running command for the lock metadata: the command path
+// without the binary name, so a subcommand reads as "triage list" rather than
+// an ambiguous "list".
+func operation(cmd *cobra.Command) string {
+	return strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()+" ")
 }
 
 // NewRootCmd builds the command tree.
@@ -91,7 +112,8 @@ func NewRootCmd() *cobra.Command {
 	flags.Float64Var(&opts.qps, "qps", resolver.DefaultQPS,
 		"cap DNS queries per second across all workers (0 for unlimited)")
 	flags.StringVar(&opts.db, "db", "",
-		"scan database path (default: yatt/yatt.db under the user config directory)")
+		"scan database path, or s3://bucket/key to keep it in S3\n"+
+			"(default: yatt/yatt.db under the user config directory)")
 	flags.BoolVarP(&opts.verbose, "verbose", "v", false, "log scan progress to stderr")
 	flags.BoolVar(&opts.punycode, "punycode", false,
 		"show IDN candidates in their punycode (xn--) form instead of Unicode")
