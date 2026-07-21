@@ -1,0 +1,40 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - revive
+    - unconvert
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+  exclusions:
+    presets:
+      - common-false-positives
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - revive
+      # Generated data tables: real TLD/language strings the misspell
+      # dictionary does not know (e.g. "immobilien", a real gTLD), not
+      # prose to spell-check.
+      - path: pkg/engine/data/tlds_iana\.go
+        linters:
+          - misspell
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/andoniaf/yatt

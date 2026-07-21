@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/latest/.schema/devbox.schema.json",
+  "packages": [
+    "go@latest",
+    "goose@latest",
+    "golangci-lint@latest",
+    "sqlite@latest",
+    "gotestsum@latest"
+  ],
+  "shell": {
+    "scripts": {
+      "build": "go build ./...",
+      "test": "gotestsum -- ./...",
+      "lint": "golangci-lint run"
+    }
+  }
+}
