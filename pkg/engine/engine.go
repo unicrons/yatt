@@ -44,6 +44,16 @@ type SuffixSwap interface {
 	PermuteSuffixes(suffix string) []string
 }
 
+// DomainSplit is implemented by a technique that moves the registrable
+// boundary instead of editing a label — currently only dot-insertion, whose
+// candidates turn a prefix of the seed's SLD into a subdomain of a new,
+// shorter registrable domain ("unicrons.cloud" read as "uni.crons.cloud",
+// where the name a squatter registers is "crons.cloud").
+type DomainSplit interface {
+	// PermuteSplit returns (subdomain label, new SLD) pairs for sld.
+	PermuteSplit(sld string) [][2]string
+}
+
 // Candidate is a single generated look-alike domain.
 type Candidate struct {
 	// Domain is the full candidate name, with the seed's subdomain reattached.
@@ -76,7 +86,7 @@ var registry = map[string]Technique{}
 // keep the closest look-alikes first, and it is independent of registration
 // order — which Go source file happens to register a technique in its
 // init() must not be able to reorder a scan's output.
-var canonicalOrder = []string{"omission", "transposition", "keyboard", "addition", "hyphenation", "vowel-swap", "bitsquatting", "tld", "homoglyph"}
+var canonicalOrder = []string{"omission", "transposition", "keyboard", "addition", "hyphenation", "vowel-swap", "bitsquatting", "dot-insertion", "tld", "homoglyph"}
 
 // Register adds a technique to the registry. It panics on a duplicate name,
 // since that can only be a programming error.
@@ -195,6 +205,10 @@ func Permute(seed Seed, techniques []Technique) []Candidate {
 			for _, sld := range tech.PermuteWithSuffix(seed.SLD, seed.Suffix) {
 				addCandidate(seed, t, sld, seed.Suffix, seen, &candidates)
 			}
+		case DomainSplit:
+			for _, split := range tech.PermuteSplit(seed.SLD) {
+				addSplitCandidate(seed, t, split[0], split[1], seed.Suffix, seen, &candidates)
+			}
 		default:
 			for _, sld := range t.Permute(seed.SLD) {
 				addCandidate(seed, t, sld, seed.Suffix, seen, &candidates)
@@ -245,6 +259,52 @@ func addCandidate(seed Seed, t Technique, sld, suffix string, seen map[string]bo
 		Domain:      domain,
 		Registrable: registrable,
 		SLD:         ascii,
+		Suffix:      suffix,
+		Technique:   t.Name(),
+	})
+}
+
+// addSplitCandidate validates and appends one boundary-moving candidate:
+// subLabel becomes a subdomain of the new registrable domain newSLD+"."+suffix,
+// and the seed's own subdomain, if any, is prepended above it.
+//
+// Dedup is keyed on the full domain rather than the registrable. Two splits of
+// one label can never share a registrable, so within the technique either key
+// would do — but the map is shared with the label techniques, and keying a
+// split on its registrable could let a label candidate that happens to spell
+// the same name suppress it (or vice versa) even though the two full domains
+// differ. The domain key is the superset that cannot collide.
+func addSplitCandidate(seed Seed, t Technique, subLabel, newSLD, suffix string, seen map[string]bool, candidates *[]Candidate) {
+	if !ValidLabel(subLabel) || !ValidLabel(newSLD) || !validSuffix(suffix) {
+		return
+	}
+	subASCII, ok := ToASCII(subLabel)
+	if !ok {
+		return
+	}
+	sldASCII, ok := ToASCII(newSLD)
+	if !ok {
+		return
+	}
+	suffix, ok = toASCIIDomain(suffix)
+	if !ok {
+		return
+	}
+
+	registrable := sldASCII + "." + suffix
+	domain := subASCII + "." + registrable
+	if seed.Subdomain != "" {
+		domain = seed.Subdomain + "." + domain
+	}
+	if seen[domain] {
+		return
+	}
+	seen[domain] = true
+
+	*candidates = append(*candidates, Candidate{
+		Domain:      domain,
+		Registrable: registrable,
+		SLD:         sldASCII,
 		Suffix:      suffix,
 		Technique:   t.Name(),
 	})
