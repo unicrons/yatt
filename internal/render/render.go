@@ -15,6 +15,7 @@ import (
 	"github.com/andoniaf/yatt/internal/enrich"
 	"github.com/andoniaf/yatt/internal/scan"
 	"github.com/andoniaf/yatt/internal/store"
+	"github.com/andoniaf/yatt/pkg/engine"
 )
 
 // Formats lists every supported --output value.
@@ -48,6 +49,16 @@ func Wide() Option {
 	return func(t *TableRenderer) { t.wide = true }
 }
 
+// Punycode keeps the table's CANDIDATE column in the ASCII "xn--" wire form
+// instead of the Unicode form it decodes to. The default is Unicode because a
+// homoglyph's whole point is how it looks — "аpple.com" shows the analyst the
+// deception, "xn--pple-43d.com" hides it. The wire form is what DNS resolved
+// and what the store keys on, so it stays available behind this option, and
+// the machine-readable formats always carry it regardless.
+func Punycode() Option {
+	return func(t *TableRenderer) { t.punycode = true }
+}
+
 // New returns the renderer for the named format.
 func New(format string, opts ...Option) (Renderer, error) {
 	switch strings.ToLower(strings.TrimSpace(format)) {
@@ -69,7 +80,8 @@ func New(format string, opts ...Option) (Renderer, error) {
 // TableRenderer writes an aligned, human-readable table. Its zero value is
 // the compact table; use New with Wide to add the enrichment column.
 type TableRenderer struct {
-	wide bool
+	wide     bool
+	punycode bool
 }
 
 // Render implements Renderer.
@@ -88,8 +100,12 @@ func (t TableRenderer) Render(w io.Writer, findings []scan.Finding) error {
 		if f.Error != "" && addresses == "" {
 			addresses = "error: " + f.Error
 		}
+		candidate := f.Candidate
+		if !t.punycode {
+			candidate = engine.ToUnicode(f.Candidate)
+		}
 		row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
-			f.Candidate, f.Technique, dash(string(f.Diff)), dash(string(f.Triage)),
+			candidate, f.Technique, dash(string(f.Diff)), dash(string(f.Triage)),
 			yesNo(f.Registered), yesNo(f.HasNS), yesNo(f.HasMX), yesNo(f.HasA),
 			yesNo(f.Wildcard), addresses,
 		)
@@ -156,14 +172,24 @@ func (TableRenderer) RenderScans(w io.Writer, scans []store.Scan) error {
 // does not allow importing back the other way.
 type findingView struct {
 	scan.Finding
+	// Unicode is the candidate's decoded IDN form, present only when it
+	// differs from the punycode candidate. The candidate field itself never
+	// changes form: it is the store and triage key, and pipelines diffing or
+	// joining on it depend on it being stable.
+	Unicode    string              `json:"unicode,omitempty"`
 	Enrichment []enrich.Enrichment `json:"enrichment,omitempty"`
 }
 
-// withEnrichment attaches each finding's enrichment links, preserving order.
+// withEnrichment attaches each finding's enrichment links and decoded IDN
+// form, preserving order.
 func withEnrichment(findings []scan.Finding) []findingView {
 	out := make([]findingView, len(findings))
 	for i, f := range findings {
-		out[i] = findingView{Finding: f, Enrichment: enrich.ForFinding(f)}
+		view := findingView{Finding: f, Enrichment: enrich.ForFinding(f)}
+		if unicode := engine.ToUnicode(f.Candidate); unicode != f.Candidate {
+			view.Unicode = unicode
+		}
+		out[i] = view
 	}
 	return out
 }

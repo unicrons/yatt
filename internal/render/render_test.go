@@ -681,3 +681,115 @@ func TestSummarize(t *testing.T) {
 		})
 	}
 }
+
+// idnFindings pairs an IDN candidate with a plain-ASCII one, so every IDN
+// rendering test can check both that the Unicode form appears where it should
+// and that ASCII rows are left entirely alone.
+func idnFindings() []scan.Finding {
+	return []scan.Finding{
+		{Candidate: "xn--pple-43d.com", Registrable: "xn--pple-43d.com", Technique: "homoglyph", Registered: true},
+		{Candidate: "xample.com", Registrable: "xample.com", Technique: "omission", Registered: true},
+	}
+}
+
+func TestTableRenderShowsUnicodeCandidatesByDefault(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (render.TableRenderer{}).Render(&buf, idnFindings()); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	got := buf.String()
+	// The homoglyph's whole point is how it looks; the table must show the
+	// deception (Cyrillic а), not its wire encoding.
+	if !strings.Contains(got, "аpple.com") {
+		t.Errorf("Render() = %q, want the Unicode form %q", got, "аpple.com")
+	}
+	if strings.Contains(got, "xn--pple-43d.com") {
+		t.Errorf("Render() = %q, want no punycode form by default", got)
+	}
+	if !strings.Contains(got, "xample.com") {
+		t.Errorf("Render() = %q, want the ASCII candidate untouched", got)
+	}
+}
+
+func TestTableRenderPunycodeOption(t *testing.T) {
+	renderer, err := render.New("table", render.Punycode())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := renderer.Render(&buf, idnFindings()); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "xn--pple-43d.com") {
+		t.Errorf("Render() = %q, want the punycode form under Punycode()", got)
+	}
+	if strings.Contains(got, "аpple.com") {
+		t.Errorf("Render() = %q, want no Unicode form under Punycode()", got)
+	}
+}
+
+func TestTableRenderEnrichmentStaysASCII(t *testing.T) {
+	renderer, err := render.New("table", render.Wide())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := renderer.Render(&buf, idnFindings()); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	// The candidate column decodes, but a URL must stay ASCII: the enrichment
+	// links keep the punycode form even while the row shows Unicode.
+	if got := buf.String(); !strings.Contains(got, "xn--pple-43d.com") {
+		t.Errorf("Render() = %q, want punycode in the enrichment links", got)
+	}
+}
+
+func TestJSONRenderKeepsPunycodeAndCarriesUnicode(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (render.JSONRenderer{}).Render(&buf, idnFindings()); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	var got []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+
+	// candidate is the store and triage key; pipelines join on it, so it must
+	// stay in the stable punycode form whatever the table shows.
+	if c := got[0]["candidate"]; c != "xn--pple-43d.com" {
+		t.Errorf("IDN candidate = %v, want the punycode form", c)
+	}
+	if u := got[0]["unicode"]; u != "аpple.com" {
+		t.Errorf("unicode = %v, want %q", u, "аpple.com")
+	}
+	// An ASCII candidate decodes to itself; repeating it as "unicode" would
+	// just be noise on every row.
+	if u, present := got[1]["unicode"]; present {
+		t.Errorf("ASCII candidate carries unicode = %v, want the field absent", u)
+	}
+}
+
+func TestNDJSONRenderCarriesUnicode(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (render.NDJSONRenderer{}).Render(&buf, idnFindings()); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2:\n%s", len(lines), buf.String())
+	}
+	if !strings.Contains(lines[0], `"unicode":"аpple.com"`) {
+		t.Errorf("IDN line = %q, want a unicode field", lines[0])
+	}
+	if strings.Contains(lines[1], `"unicode"`) {
+		t.Errorf("ASCII line = %q, want no unicode field", lines[1])
+	}
+}

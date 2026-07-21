@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 
 	"golang.org/x/sync/errgroup"
 
@@ -91,6 +92,10 @@ type Options struct {
 	// Limit bounds the total candidate count after per-technique capping.
 	// Zero or negative means unlimited.
 	Limit int
+	// Progress, when non-nil, is invoked after each candidate resolves with the
+	// running totals. Calls are serialized by the scan, so the callback itself
+	// needs no locking.
+	Progress func(done, total, registered int)
 }
 
 // Result is the outcome of a run.
@@ -187,6 +192,24 @@ func resolveAll(ctx context.Context, opts Options, candidates []engine.Candidate
 	findings := make([]Finding, len(candidates))
 	resolved := make([]bool, len(candidates))
 
+	// Progress totals live behind their own mutex rather than atomics: done and
+	// registered must move together, and the callback must see each (done,
+	// registered) pair exactly once.
+	var progressMu sync.Mutex
+	var done, registered int
+	report := func(finding Finding) {
+		if opts.Progress == nil {
+			return
+		}
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		done++
+		if finding.Registered {
+			registered++
+		}
+		opts.Progress(done, len(candidates), registered)
+	}
+
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.SetLimit(concurrency)
 	for i, candidate := range candidates {
@@ -198,6 +221,7 @@ func resolveAll(ctx context.Context, opts Options, candidates []engine.Candidate
 			// Distinct indices, so no two workers ever touch the same element.
 			findings[i] = finding
 			resolved[i] = true
+			report(finding)
 			return nil
 		})
 	}

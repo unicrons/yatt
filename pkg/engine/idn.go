@@ -39,3 +39,15 @@ func ToASCII(label string) (ascii string, ok bool) {
 	}
 	return out, true
 }
+
+// ToUnicode converts a domain from its punycode ("xn--") wire form back to the
+// Unicode form a browser's address bar would display. A domain that cannot be
+// decoded is returned unchanged: the ASCII form is always a valid, if less
+// readable, way to show it.
+func ToUnicode(domain string) string {
+	out, err := idna.ToUnicode(domain)
+	if err != nil {
+		return domain
+	}
+	return out
+}

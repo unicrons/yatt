@@ -27,7 +27,7 @@ func newDiffCmd(global *globalOptions) *cobra.Command {
 }
 
 func runDiff(cmd *cobra.Command, global *globalOptions, seed string) error {
-	renderer, err := render.New(global.output)
+	renderer, err := render.New(global.output, global.renderOptions()...)
 	if err != nil {
 		return err
 	}

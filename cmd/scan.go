@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -141,6 +142,23 @@ func newScanCmd(global *globalOptions) *cobra.Command {
 	return cmd
 }
 
+// progressReporter returns a live progress reporter when stderr is actually a
+// terminal, and nil otherwise: the reporter's carriage-return rewrites are
+// for a human watching, and in a pipe or a CI log they are just noise. This
+// keeps the standing contract that stdout is machine-readable and stderr
+// carries the chatter, with redirection as the off switch.
+func progressReporter(stderr io.Writer) *render.Progress {
+	f, ok := stderr.(*os.File)
+	if !ok {
+		return nil
+	}
+	info, err := f.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return nil
+	}
+	return render.NewProgress(f)
+}
+
 // profileFlags maps a Profile field's own name (config.Profile's
 // mapstructure tag, also what a config file author writes) to the flag that
 // overrides it, so applyProfile can tell a preset from a choice the user
@@ -186,7 +204,7 @@ func applyProfile(cmd *cobra.Command, global *globalOptions, opts *scanOptions, 
 }
 
 func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed string) error {
-	var renderOpts []render.Option
+	renderOpts := global.renderOptions()
 	if opts.wide {
 		renderOpts = append(renderOpts, render.Wide())
 	}
@@ -242,7 +260,7 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "scanning %s\n", seed)
 	}
 
-	result, err := scan.Run(cmd.Context(), scan.Options{
+	scanOpts := scan.Options{
 		Seed:        seed,
 		Resolver:    dnsResolver,
 		Techniques:  techniques,
@@ -253,7 +271,23 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 		TLDProfile:  opts.tldProfile,
 		TLDs:        tlds,
 		Limit:       opts.limit,
-	})
+	}
+
+	// The live progress line only makes sense on a terminal: its carriage
+	// returns would be junk in a log or a pipe, so anything that is not a
+	// character device suppresses it — no flag needed, redirecting stderr is
+	// the switch. Stdout stays machine-readable either way.
+	progress := progressReporter(cmd.ErrOrStderr())
+	if progress != nil {
+		scanOpts.Progress = progress.Update
+	}
+
+	result, err := scan.Run(cmd.Context(), scanOpts)
+	if progress != nil {
+		// Cleared before anything else prints — the table on success, the
+		// error on failure — so neither lands on top of the bar's remains.
+		progress.Finish()
+	}
 	if err != nil {
 		return err
 	}

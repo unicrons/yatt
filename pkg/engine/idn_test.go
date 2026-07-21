@@ -68,6 +68,38 @@ func TestToASCII(t *testing.T) {
 	}
 }
 
+func TestToUnicode(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain string
+		want   string
+	}{
+		{
+			name:   "a punycode domain decodes to its Unicode form",
+			domain: "xn--pple-43d.com",
+			want:   "аpple.com", // Cyrillic 'а' (U+0430)
+		},
+		{
+			name:   "plain ASCII passes through unchanged",
+			domain: "example.com",
+			want:   "example.com",
+		},
+		{
+			name:   "an undecodable label falls back to the input",
+			domain: "xn--999999999.com", // punycode payload with no letters
+			want:   "xn--999999999.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := engine.ToUnicode(tt.domain); got != tt.want {
+				t.Errorf("ToUnicode(%q) = %q, want %q", tt.domain, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestToASCIIRoundTrips guards the property idn.go's own doc comment relies
 // on: a punycode-encoded label decodes back to the Unicode form it started
 // from.

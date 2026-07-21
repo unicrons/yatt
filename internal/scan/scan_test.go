@@ -180,6 +180,55 @@ func TestConcurrencyIsBounded(t *testing.T) {
 	}
 }
 
+// TestProgressReporting checks the contract the progress line depends on: one
+// serialized callback per resolved candidate, done climbing one at a time to
+// the total, and the registered count ending at what the scan actually found.
+func TestProgressReporting(t *testing.T) {
+	t.Parallel()
+
+	type call struct{ done, total, registered int }
+	var calls []call
+
+	result, err := scan.Run(context.Background(), scan.Options{
+		Seed:        "example.com",
+		Resolver:    newJitteryResolver(),
+		Concurrency: 16,
+		Progress: func(done, total, registered int) {
+			calls = append(calls, call{done, total, registered})
+		},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if len(calls) != len(result.Findings) {
+		t.Fatalf("got %d progress calls, want one per finding (%d)", len(calls), len(result.Findings))
+	}
+	registered := 0
+	for i, c := range calls {
+		if c.done != i+1 {
+			t.Fatalf("call %d reported done=%d, want %d — done must climb one at a time", i, c.done, i+1)
+		}
+		if c.total != len(result.Findings) {
+			t.Fatalf("call %d reported total=%d, want %d", i, c.total, len(result.Findings))
+		}
+		if c.registered < registered {
+			t.Fatalf("call %d reported registered=%d after %d — the count must never go down", i, c.registered, registered)
+		}
+		registered = c.registered
+	}
+
+	wantRegistered := 0
+	for _, f := range result.Findings {
+		if f.Registered {
+			wantRegistered++
+		}
+	}
+	if registered != wantRegistered {
+		t.Errorf("final registered count = %d, want %d", registered, wantRegistered)
+	}
+}
+
 // resolverFunc adapts a function to the resolver interface.
 type resolverFunc func(ctx context.Context, name string, qtype uint16) (*dns.Msg, error)
 

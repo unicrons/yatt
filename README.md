@@ -45,6 +45,7 @@ Global flags:
       --concurrency int   how many candidates to resolve at once (default 20)
       --qps float         cap DNS queries per second across all workers (0 for unlimited)
       --config string     config file (YAML/JSON/TOML) defining scan profiles (default: none)
+      --punycode          show IDN candidates in their punycode (xn--) form instead of Unicode
   -v, --verbose           log scan progress to stderr
 
 scan flags:
@@ -70,6 +71,15 @@ yatt scan example.com --resolver 1.1.1.1 --timeout 5s
 
 Machine-readable output goes to stdout and progress goes to stderr, so piping to `jq` stays clean
 even with `--verbose`.
+
+While a scan runs in a terminal, a live progress line on stderr tracks completions, the registered
+count so far, an ETA and the resolution speed. It only appears when stderr is a terminal — piping or
+redirecting stderr (CI, cron, `2>/dev/null`) suppresses it automatically, no flag needed.
+
+The table renders IDN candidates in their Unicode form — a homoglyph like `аpple.com` is shown as
+the deception it is, not as `xn--pple-43d.com`. Pass `--punycode` to see the wire form instead. JSON
+and NDJSON always keep the stable punycode form in `candidate` (it is the store and triage key) and
+add a `unicode` field on the rows where the two differ.
 
 ## Registered candidates only, registered candidates first
 

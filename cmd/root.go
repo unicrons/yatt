@@ -32,11 +32,23 @@ type globalOptions struct {
 	qps         float64
 	db          string
 	verbose     bool
+	punycode    bool
 	configPath  string
 	// config is resolved once per invocation, in PersistentPreRunE, once every
 	// flag the command was actually given is known — a scan profile is applied
 	// against that, not against the flags as declared.
 	config *config.Config
+}
+
+// renderOptions returns the table options every findings-rendering command
+// inherits from the global flags, so `scan` and `diff` cannot drift on how a
+// candidate is displayed.
+func (o *globalOptions) renderOptions() []render.Option {
+	var opts []render.Option
+	if o.punycode {
+		opts = append(opts, render.Punycode())
+	}
+	return opts
 }
 
 // openStore opens the scan database, defaulting to a per-user location when
@@ -81,6 +93,8 @@ func NewRootCmd() *cobra.Command {
 	flags.StringVar(&opts.db, "db", "",
 		"scan database path (default: yatt/yatt.db under the user config directory)")
 	flags.BoolVarP(&opts.verbose, "verbose", "v", false, "log scan progress to stderr")
+	flags.BoolVar(&opts.punycode, "punycode", false,
+		"show IDN candidates in their punycode (xn--) form instead of Unicode")
 	flags.StringVar(&opts.configPath, "config", "",
 		"config file (YAML/JSON/TOML) defining scan profiles (default: none)")
 
