@@ -12,8 +12,9 @@ verdict you record once is never asked of you again.
 Ten permutation techniques (omission, transposition, keyboard adjacency, addition, hyphenation,
 vowel swap, bitsquatting, dot insertion, TLD swap, homoglyph), concurrent resolution under a QPS
 ceiling, per-zone wildcard detection, and table/JSON/NDJSON output.
-Scans persist to local SQLite with cross-scan diff (`new`/`changed`/`unchanged`/`gone`) and persistent
-triage state. Scan profiles, a config file, and enrichment links round out the first slice.
+Scans persist to SQLite — a local file by default, or one kept in S3 and shared across machines —
+with cross-scan diff (`new`/`changed`/`unchanged`/`gone`) and persistent triage state. Scan
+profiles, a config file, and enrichment links round out the first slice.
 
 ## Quickstart
 
@@ -37,12 +38,16 @@ yatt history <domain>               list the recorded scans of a seed
 yatt diff <domain>                  compare the last two scans, without resolving
 yatt triage <domain> <candidate>    record a verdict on a candidate
 yatt triage list <domain>           list the verdicts recorded for a seed
+yatt state push [local-db]          upload a local database to the remote location
+yatt state pull <local-path>        download the remote database to a local file
+yatt state unlock                   clear the lock a crashed process left behind
 
 Global flags:
   -o, --output string     output format: table|json|ndjson (default "table")
       --resolver string   upstream DNS resolver as host[:port] (default: the system resolver)
       --timeout duration  per-query DNS timeout (default 3s)
-      --db string         scan database path (default: yatt/yatt.db under the user config dir)
+      --db string         scan database path, or s3://bucket/key to keep it in S3
+                          (default: yatt/yatt.db under the user config dir)
       --concurrency int   how many candidates to resolve at once (default 20)
       --qps float         cap DNS queries per second across all workers (0 for unlimited)
       --config string     config file (YAML/JSON/TOML) defining scan profiles (default: none)
@@ -212,6 +217,41 @@ verdict regardless — use it to pre-record a judgement before the seed's first 
 candidate the techniques in use did not produce. Such a verdict is stored, but stays invisible until
 some scan surfaces the candidate.
 
+### Remote state in S3
+
+The database can live in S3 instead of on local disk, so several machines — a laptop and a cron box,
+say — share one history and one set of verdicts. Point `--db` at an object URL and every command
+works unchanged:
+
+```sh
+yatt state push --db s3://my-bucket/yatt/yatt.db     # one-time migration of the local database
+yatt scan example.com --db s3://my-bucket/yatt/yatt.db
+```
+
+Credentials come from the standard AWS chain (environment, shared config, SSO, instance roles), the
+region from `AWS_REGION`, and S3-compatible endpoints (MinIO, R2, …) from `AWS_ENDPOINT_URL_S3`.
+
+Each command acquires a lock object (`<key>.lock`) before touching the database — created atomically
+with a conditional write, so two clients cannot both win — then downloads the database, works on the
+local copy, uploads it back if it changed, and releases the lock. Reads lock too: a second command
+starting while one is running aborts immediately, naming the holder:
+
+```
+error: remote state is locked: held by laptop.local (pid 4242) since 2026-07-21T14:03:11Z, yatt
+devel, operation "scan" — if that process is gone, run: yatt state unlock --db s3://…
+```
+
+A process that dies mid-command leaves that lock behind; `yatt state unlock` shows the holder and
+clears it after confirmation. Only clear a lock whose process is actually gone — behind a
+force-cleared lock the final upload is still conditional on the object version the run started from,
+so a concurrent writer surfaces as a loud upload error rather than a silent overwrite, but the run
+that loses that race has to be redone.
+
+`state pull` takes a consistent local snapshot (handy for backups); `state push --force` restores
+one, or uploads the copy a failed upload preserved. Don't mix modes: once a database is pushed to
+S3, retire the local file — a machine still scanning against its local copy forks the history the
+remote one exists to share.
+
 ## Scan profiles and the config file
 
 `--profile` is a preset for the knobs that shape a scan: `techniques`, `tld_profile`, `concurrency`,
@@ -330,6 +370,7 @@ internal/resolver/   miekg/dns wrapper; the registered/unregistered signal
 internal/scan/       orchestration: permute -> resolve -> persist -> diff -> triage -> report
 internal/wildcard/   per-zone catch-all detection
 internal/store/      database/sql repository over SQLite; goose migrations (embed.FS)
+internal/store/remote/  S3 transport for the store: lock object, download, upload-on-close
 internal/triage/     triage status vocabulary and transition rules
 internal/config/     scan profiles, config-file loading, and the precedence chain
 internal/enrich/     AbuseIPDB / Shodan link builders (no HTTP calls)
