@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/andoniaf/yatt/internal/enrich"
 	"github.com/andoniaf/yatt/internal/scan"
 	"github.com/andoniaf/yatt/internal/store"
 )
@@ -35,11 +36,27 @@ type Renderer interface {
 	RenderTriage(w io.Writer, entries []store.Triage) error
 }
 
+// Option adjusts a renderer built by New.
+type Option func(*TableRenderer)
+
+// Wide turns on the table's ENRICH column. It is off by default because the
+// links are two full URLs per row, derivable from the candidate name alone,
+// and wide enough to wrap every other column off a normal terminal — a steep
+// price on the default view for something an analyst wants only when they are
+// about to open one. JSON and NDJSON carry the links either way.
+func Wide() Option {
+	return func(t *TableRenderer) { t.wide = true }
+}
+
 // New returns the renderer for the named format.
-func New(format string) (Renderer, error) {
+func New(format string, opts ...Option) (Renderer, error) {
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "", "table":
-		return TableRenderer{}, nil
+		var t TableRenderer
+		for _, opt := range opts {
+			opt(&t)
+		}
+		return t, nil
 	case "json":
 		return JSONRenderer{}, nil
 	case "ndjson":
@@ -49,14 +66,21 @@ func New(format string) (Renderer, error) {
 	}
 }
 
-// TableRenderer writes an aligned, human-readable table.
-type TableRenderer struct{}
+// TableRenderer writes an aligned, human-readable table. Its zero value is
+// the compact table; use New with Wide to add the enrichment column.
+type TableRenderer struct {
+	wide bool
+}
 
 // Render implements Renderer.
-func (TableRenderer) Render(w io.Writer, findings []scan.Finding) error {
+func (t TableRenderer) Render(w io.Writer, findings []scan.Finding) error {
 	findings = scan.SeedFirst(findings)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "CANDIDATE\tTECHNIQUE\tDIFF\tTRIAGE\tREGISTERED\tNS\tMX\tA\tWILDCARD\tADDRESSES"); err != nil {
+	header := "CANDIDATE\tTECHNIQUE\tDIFF\tTRIAGE\tREGISTERED\tNS\tMX\tA\tWILDCARD\tADDRESSES"
+	if t.wide {
+		header += "\tENRICH"
+	}
+	if _, err := fmt.Fprintln(tw, header); err != nil {
 		return err
 	}
 	for _, f := range findings {
@@ -64,15 +88,32 @@ func (TableRenderer) Render(w io.Writer, findings []scan.Finding) error {
 		if f.Error != "" && addresses == "" {
 			addresses = "error: " + f.Error
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
 			f.Candidate, f.Technique, dash(string(f.Diff)), dash(string(f.Triage)),
 			yesNo(f.Registered), yesNo(f.HasNS), yesNo(f.HasMX), yesNo(f.HasA),
 			yesNo(f.Wildcard), addresses,
-		); err != nil {
+		)
+		if t.wide {
+			row += "\t" + enrichmentColumn(f.Candidate)
+		}
+		if _, err := fmt.Fprintln(tw, row); err != nil {
 			return err
 		}
 	}
 	return tw.Flush()
+}
+
+// enrichmentColumn renders the compact, table-friendly form of a finding's
+// enrichment links: the two by-domain lookups only. Per-address links are
+// left to --output json, where a table row's width would otherwise balloon
+// with every address a candidate resolved to.
+func enrichmentColumn(candidate string) string {
+	links := enrich.DomainLinks(candidate)
+	urls := make([]string, len(links))
+	for i, l := range links {
+		urls[i] = l.URL
+	}
+	return strings.Join(urls, " ")
 }
 
 // RenderTriage implements Renderer.
@@ -108,6 +149,25 @@ func (TableRenderer) RenderScans(w io.Writer, scans []store.Scan) error {
 	return tw.Flush()
 }
 
+// findingView is a finding as the machine-readable formats emit it: the
+// finding's own fields, plus its ready-to-open enrichment links. It exists
+// here rather than as a field on scan.Finding because scan must not import
+// enrich — enrich reads scan.Finding to build the links it returns, and Go
+// does not allow importing back the other way.
+type findingView struct {
+	scan.Finding
+	Enrichment []enrich.Enrichment `json:"enrichment,omitempty"`
+}
+
+// withEnrichment attaches each finding's enrichment links, preserving order.
+func withEnrichment(findings []scan.Finding) []findingView {
+	out := make([]findingView, len(findings))
+	for i, f := range findings {
+		out[i] = findingView{Finding: f, Enrichment: enrich.ForFinding(f)}
+	}
+	return out
+}
+
 // JSONRenderer writes the findings as one indented JSON array.
 type JSONRenderer struct{}
 
@@ -116,7 +176,7 @@ func (JSONRenderer) Render(w io.Writer, findings []scan.Finding) error {
 	if findings == nil {
 		findings = []scan.Finding{}
 	}
-	return encodeIndented(w, scan.SeedFirst(findings))
+	return encodeIndented(w, withEnrichment(scan.SeedFirst(findings)))
 }
 
 // RenderScans implements Renderer.
@@ -141,7 +201,7 @@ type NDJSONRenderer struct{}
 // Render implements Renderer.
 func (NDJSONRenderer) Render(w io.Writer, findings []scan.Finding) error {
 	enc := json.NewEncoder(w)
-	for _, f := range scan.SeedFirst(findings) {
+	for _, f := range withEnrichment(scan.SeedFirst(findings)) {
 		if err := enc.Encode(f); err != nil {
 			return err
 		}

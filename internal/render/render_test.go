@@ -378,6 +378,107 @@ func TestTableRenderShowsErrors(t *testing.T) {
 	}
 }
 
+// --wide adds the ENRICH column, carrying the by-domain links only: showing
+// every per-address link too would balloon a row's width with each address a
+// candidate resolved to.
+func TestTableRenderShowsTheEnrichmentColumnWhenWide(t *testing.T) {
+	renderer, err := render.New("table", render.Wide())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission"}}
+	if err := renderer.Render(&buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "ENRICH") {
+		t.Fatalf("Render() = %q, want an ENRICH column", got)
+	}
+	if !strings.Contains(got, "https://www.abuseipdb.com/whois/xample.com") {
+		t.Errorf("Render() = %q, want the AbuseIPDB domain link", got)
+	}
+	if !strings.Contains(got, "https://www.shodan.io/domain/xample.com") {
+		t.Errorf("Render() = %q, want the Shodan domain link", got)
+	}
+}
+
+// Without --wide the table stays narrow: two full URLs per row, derivable
+// from the candidate name, would wrap every other column off the terminal.
+func TestTableRenderOmitsTheEnrichmentColumnByDefault(t *testing.T) {
+	renderer, err := render.New("table")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission"}}
+	if err := renderer.Render(&buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	got := buf.String()
+	if strings.Contains(got, "ENRICH") {
+		t.Errorf("Render() = %q, want no ENRICH column without Wide", got)
+	}
+	if strings.Contains(got, "abuseipdb.com") {
+		t.Errorf("Render() = %q, want no enrichment links without Wide", got)
+	}
+}
+
+// JSON carries the full enrichment set, including per-address links, since a
+// machine-readable format has no row-width concern to trade coverage away
+// for.
+func TestJSONRenderCarriesEnrichmentLinks(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []scan.Finding{{
+		Candidate: "xample.com",
+		Addresses: []string{"192.0.2.1"},
+	}}
+	if err := (render.JSONRenderer{}).Render(&buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	var got []struct {
+		Enrichment []struct {
+			Name string `json:"name"`
+			URL  string `json:"url"`
+		} `json:"enrichment"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if len(got) != 1 {
+		t.Fatalf("decoded %d findings, want 1", len(got))
+	}
+	// 2 by-domain + 2 by-address (AbuseIPDB + Shodan for the one address).
+	if len(got[0].Enrichment) != 4 {
+		t.Fatalf("got %d enrichment links, want 4: %+v", len(got[0].Enrichment), got[0].Enrichment)
+	}
+	var sawAddressLink bool
+	for _, e := range got[0].Enrichment {
+		if strings.Contains(e.URL, "192.0.2.1") {
+			sawAddressLink = true
+		}
+	}
+	if !sawAddressLink {
+		t.Errorf("enrichment links = %+v, want one referencing the resolved address", got[0].Enrichment)
+	}
+}
+
+func TestNDJSONRenderCarriesEnrichmentLinks(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []scan.Finding{{Candidate: "xample.com"}}
+	if err := (render.NDJSONRenderer{}).Render(&buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"enrichment"`) {
+		t.Errorf("Render() = %q, want an enrichment field", buf.String())
+	}
+}
+
 func TestJSONRenderIsValidAndComplete(t *testing.T) {
 	var buf bytes.Buffer
 	if err := (render.JSONRenderer{}).Render(&buf, sampleFindings()); err != nil {

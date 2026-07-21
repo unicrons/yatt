@@ -12,9 +12,7 @@ verdict you record once is never asked of you again.
 Five permutation techniques (omission, transposition, keyboard adjacency, TLD swap, homoglyph),
 concurrent resolution under a QPS ceiling, per-zone wildcard detection, and table/JSON/NDJSON output.
 Scans persist to local SQLite with cross-scan diff (`new`/`changed`/`unchanged`/`gone`) and persistent
-triage state.
-
-Scan profiles, a config file, and enrichment links are still to come.
+triage state. Scan profiles, a config file, and enrichment links round out the first slice.
 
 ## Quickstart
 
@@ -46,15 +44,18 @@ Global flags:
       --db string         scan database path (default: yatt/yatt.db under the user config dir)
       --concurrency int   how many candidates to resolve at once (default 20)
       --qps float         cap DNS queries per second across all workers (0 for unlimited)
+      --config string     config file (YAML/JSON/TOML) defining scan profiles (default: none)
   -v, --verbose           log scan progress to stderr
 
 scan flags:
-      --show-unregistered   also report candidates nobody has registered
-      --technique strings   techniques to run: omission, transposition, keyboard, tld, homoglyph
-                            (default: all)
-      --tld-profile string  TLD list the tld technique swaps against: common|full (default "common")
-      --tld-file string     custom TLD list, one per line; overrides --tld-profile
-      --limit int           cap the total candidate count (0 for unlimited)
+      --show-unregistered       also report candidates nobody has registered
+      --technique strings       techniques to run: omission, transposition, keyboard, tld, homoglyph
+                                (default: all)
+      --tld-profile string      TLD list the tld technique swaps against: common|full (default "common")
+      --tld-file string         custom TLD list, one per line; overrides --tld-profile
+      --limit int               cap the total candidate count after per-technique capping (0 for unlimited)
+      --profile string          scan profile: quick|full, or one defined in --config
+      --wide                    add the enrichment-link column to the table
       --status strings          report only candidates with these triage statuses
       --exclude-status strings  report every candidate except those with these statuses
 ```
@@ -155,6 +156,76 @@ verdict regardless — use it to pre-record a judgement before the seed's first 
 candidate the techniques in use did not produce. Such a verdict is stored, but stays invisible until
 some scan surfaces the candidate.
 
+## Scan profiles and the config file
+
+`--profile` is a preset for the knobs that shape a scan: `techniques`, `tld_profile`, `concurrency`,
+`qps`, `timeout` and `limit`. Two are built in:
+
+- `quick` — omission, transposition and keyboard adjacency against the common TLD list, at modest
+  concurrency, for a fast first look.
+- `full` — every technique, including the two fan-out-heavy ones (homoglyph, TLD swap against the
+  whole IANA list), at higher concurrency.
+
+```sh
+yatt scan example.com --profile quick
+yatt scan example.com --profile full
+```
+
+A profile is a preset, not a lock: any flag it sets can still be overridden individually, and the flag
+always wins.
+
+```sh
+yatt scan example.com --profile quick --technique homoglyph   # quick's techniques, but this one instead
+yatt scan example.com --profile quick --tld-profile full      # quick's techniques, full's TLD list
+```
+
+`--config` points at a YAML/JSON/TOML file that can redefine a builtin profile or add new ones under
+`profiles`, naming only the fields it wants to change — anything it leaves out still comes from the
+builtin of the same name, or stays unset for a name with no builtin:
+
+```yaml
+# yatt.yaml
+profile: quick        # selected when --profile is not given
+
+profiles:
+  quick:
+    tld_profile: full  # quick, but sweeping the full TLD list instead of the curated one
+
+  thorough:             # a profile with no builtin counterpart
+    techniques: [omission, transposition, keyboard, tld]
+    tld_profile: full
+    concurrency: 30
+    limit: 300
+```
+
+```sh
+yatt --config yatt.yaml scan example.com --profile thorough
+```
+
+Precedence, low to high: the builtin profile < a same-named profile in the config file < the
+`YATT_PROFILE` environment variable < an explicit `--profile` < a flag the command line actually set
+for that one knob. A profile field left unset at every level does not blank a flag's own default —
+scanning with no `--profile` at all behaves exactly as if profiles did not exist.
+
+## Enrichment links
+
+Every finding carries ready-to-open AbuseIPDB and Shodan lookup links: one pair by domain, plus one
+pair per resolved address. Nothing here makes an HTTP call — these are links to open by hand, not API
+calls this tool makes on your behalf, so there is no key to configure and no rate limit to trip.
+
+```sh
+yatt scan example.com --output json | jq '.[0].enrichment'
+```
+
+`--output json`/`--output ndjson` always include the full set, including one pair per resolved
+address. The table leaves the links out by default — two full URLs per row, each derivable from the
+candidate name, would wrap every other column off the terminal — and `--wide` adds an `ENRICH` column
+carrying the by-domain pair:
+
+```sh
+yatt scan example.com --wide
+```
+
 ## How "registered" is decided
 
 Registration is read from the **response code of an NS query at the candidate's registrable domain
@@ -188,6 +259,8 @@ internal/scan/       orchestration: permute -> resolve -> persist -> diff -> tri
 internal/wildcard/   per-zone catch-all detection
 internal/store/      database/sql repository over SQLite; goose migrations (embed.FS)
 internal/triage/     triage status vocabulary and transition rules
+internal/config/     scan profiles, config-file loading, and the precedence chain
+internal/enrich/     AbuseIPDB / Shodan link builders (no HTTP calls)
 internal/render/     table / JSON / NDJSON renderers
 ```
 
