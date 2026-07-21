@@ -148,6 +148,23 @@ func TestDiffIgnoresRecordChurn(t *testing.T) {
 	}
 }
 
+// A failed lookup stores zero-valued signals next to its error. Comparing
+// those zeroes as answers would report a phantom lapse on the failure and a
+// phantom change back on recovery — a failed lookup is not evidence that
+// anything moved.
+func TestDiffTreatsErroredLookupsAsUnchanged(t *testing.T) {
+	registered := finding("xample.com", true, true, true, false)
+	errored := finding("xample.com", false, false, false, false)
+	errored.Error = "query NS xample.com: i/o timeout"
+
+	if got := scan.Diff([]scan.Finding{registered}, []scan.Finding{errored}); got.Findings[0].Diff != scan.DiffUnchanged {
+		t.Errorf("registered -> errored: diff = %q, want %q", got.Findings[0].Diff, scan.DiffUnchanged)
+	}
+	if got := scan.Diff([]scan.Finding{errored}, []scan.Finding{registered}); got.Findings[0].Diff != scan.DiffUnchanged {
+		t.Errorf("errored -> recovered: diff = %q, want %q", got.Findings[0].Diff, scan.DiffUnchanged)
+	}
+}
+
 func TestDiffDoesNotMutateInput(t *testing.T) {
 	current := []scan.Finding{finding("xample.com", false, false, false, false)}
 

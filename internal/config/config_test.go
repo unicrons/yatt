@@ -92,6 +92,67 @@ func TestResolveConfigFileProfileOverridesTheBuiltinFieldByField(t *testing.T) {
 	}
 }
 
+// Viper lowercases config keys, so profile names must resolve
+// case-insensitively across both sources: "--profile QUICK" must yield the
+// builtin overridden by the config file's quick section, never the file's
+// fields overlaid on a zero profile.
+func TestResolveMatchesProfileNamesCaseInsensitively(t *testing.T) {
+	path := writeConfig(t, "profiles:\n  quick:\n    concurrency: 5\n")
+
+	cfg := config.New()
+	if err := cfg.Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	got, err := cfg.Resolve("QUICK")
+	if err != nil {
+		t.Fatalf("Resolve(\"QUICK\"): %v", err)
+	}
+	if got.Concurrency != 5 {
+		t.Errorf("Concurrency = %d, want the config file's 5", got.Concurrency)
+	}
+	builtin := config.Builtins["quick"]
+	if !reflect.DeepEqual(got.Techniques, builtin.Techniques) {
+		t.Errorf("Techniques = %v, want the builtin's %v — the builtin base was skipped", got.Techniques, builtin.Techniques)
+	}
+}
+
+// A bare YAML number decodes into time.Duration as nanoseconds — viper's
+// duration hook converts only strings — so `timeout: 5` means five
+// nanoseconds and every DNS query in the scan would time out. No plausible
+// DNS timeout is below a millisecond, so the mistake is diagnosed instead of
+// applied.
+func TestResolveRejectsASubMillisecondTimeout(t *testing.T) {
+	path := writeConfig(t, "profiles:\n  mine:\n    timeout: 5\n")
+
+	cfg := config.New()
+	if err := cfg.Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	_, err := cfg.Resolve("mine")
+	if err == nil {
+		t.Fatal("Resolve succeeded for timeout: 5 (nanoseconds), want an error")
+	}
+	if !strings.Contains(err.Error(), "5s") {
+		t.Errorf("error = %q, want it to point at writing a duration string such as \"5s\"", err)
+	}
+
+	// The same value written as a duration string is fine.
+	path = writeConfig(t, "profiles:\n  mine:\n    timeout: 5s\n")
+	cfg = config.New()
+	if err := cfg.Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got, err := cfg.Resolve("mine")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Timeout.Seconds() != 5 {
+		t.Errorf("Timeout = %v, want 5s", got.Timeout)
+	}
+}
+
 // A config file may also define a profile with no builtin of the same name.
 func TestResolveConfigFileDefinesANewProfile(t *testing.T) {
 	path := writeConfig(t, "profiles:\n  custom:\n    techniques: [omission, tld]\n    limit: 25\n")

@@ -65,6 +65,17 @@ func TestOriginal(t *testing.T) {
 			wantRegistrable: "example.com",
 			wantSLD:         "example",
 		},
+		{
+			// The resolver sends names verbatim, so the seed's own row must
+			// carry the punycode wire form: raw UTF-8 on the wire answers
+			// NXDOMAIN, which would record the user's own domain as
+			// unregistered and invert the baseline of every scan.
+			name:            "an IDN seed is converted to its wire form",
+			seed:            "münchen.de",
+			wantDomain:      "xn--mnchen-3ya.de",
+			wantRegistrable: "xn--mnchen-3ya.de",
+			wantSLD:         "xn--mnchen-3ya",
+		},
 	}
 
 	for _, tt := range tests {

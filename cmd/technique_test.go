@@ -125,6 +125,24 @@ func TestScanTLDFileOverridesTheProfile(t *testing.T) {
 	}
 }
 
+// An explicitly given file that yields no TLDs is an error: scan.Run treats
+// an empty list as "no custom list" and would silently sweep the
+// --tld-profile the file was meant to replace.
+func TestScanRejectsAnEmptyTLDFile(t *testing.T) {
+	withTempStore(t)
+	withFakeResolver(t, scriptedResolver{})
+
+	path := writeTLDFile(t, "# every entry commented out\n\n")
+
+	_, _, err := run(t, "scan", "example.com", "--technique", "tld", "--tld-file", path)
+	if err == nil {
+		t.Fatal("scan with a comment-only --tld-file succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "no TLDs") {
+		t.Errorf("error = %q, want it to say the file held no TLDs", err)
+	}
+}
+
 func TestScanRejectsAMissingTLDFile(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{})

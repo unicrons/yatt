@@ -80,6 +80,12 @@ func TestHomoglyphPermuteWithSuffixGatesUnicode(t *testing.T) {
 	if !contains(gated, "appl3") {
 		t.Errorf("PermuteWithSuffix(%q, %q) = %v, want the ASCII substitution to still fire", "apple", "us", gated)
 	}
+
+	// The gate keys bare TLDs but a public suffix is often multi-label: the
+	// registry policy that gates "example.jp" gates "example.co.jp" too.
+	if gatedMulti := (engine.Homoglyph{}).PermuteWithSuffix("apple", "co.jp"); contains(gatedMulti, "аpple") {
+		t.Errorf("PermuteWithSuffix(%q, %q) contains a Unicode variant, want the gate to cover a multi-label suffix under a gated ccTLD", "apple", "co.jp")
+	}
 }
 
 func TestHomoglyphPermuteWithoutSuffixUsesTheFullUnicodeTable(t *testing.T) {

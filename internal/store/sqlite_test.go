@@ -55,10 +55,6 @@ func TestScanCountsExcludeTheSeedRow(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
 
-	id, err := s.CreateScan(ctx, "example.com", "")
-	if err != nil {
-		t.Fatalf("CreateScan: %v", err)
-	}
 	findings := append([]store.Finding{{
 		Candidate:   "example.com",
 		Registrable: "example.com",
@@ -67,8 +63,8 @@ func TestScanCountsExcludeTheSeedRow(t *testing.T) {
 		HasNS:       true,
 		Rcode:       "NOERROR",
 	}}, sampleFindings()...)
-	if err := s.SaveFindings(ctx, id, findings); err != nil {
-		t.Fatalf("SaveFindings: %v", err)
+	if _, err := s.RecordScan(ctx, "example.com", "", findings); err != nil {
+		t.Fatalf("RecordScan: %v", err)
 	}
 
 	scan, stored, err := s.LastScan(ctx, "example.com")
@@ -101,8 +97,8 @@ func TestOpenIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if _, err := first.CreateScan(context.Background(), "example.com", ""); err != nil {
-		t.Fatalf("CreateScan: %v", err)
+	if _, err := first.RecordScan(context.Background(), "example.com", "", nil); err != nil {
+		t.Fatalf("RecordScan: %v", err)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -128,12 +124,9 @@ func TestSaveAndReadBackFindings(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
 
-	id, err := s.CreateScan(ctx, "example.com", "quick")
+	id, err := s.RecordScan(ctx, "example.com", "quick", sampleFindings())
 	if err != nil {
-		t.Fatalf("CreateScan: %v", err)
-	}
-	if err := s.SaveFindings(ctx, id, sampleFindings()); err != nil {
-		t.Fatalf("SaveFindings: %v", err)
+		t.Fatalf("RecordScan: %v", err)
 	}
 
 	scan, findings, err := s.LastScan(ctx, "example.com")
@@ -196,21 +189,14 @@ func TestLastScanReturnsTheMostRecentScan(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
 
-	first, err := s.CreateScan(ctx, "example.com", "")
+	first, err := s.RecordScan(ctx, "example.com", "", sampleFindings())
 	if err != nil {
-		t.Fatalf("CreateScan: %v", err)
-	}
-	if err := s.SaveFindings(ctx, first, sampleFindings()); err != nil {
-		t.Fatalf("SaveFindings: %v", err)
+		t.Fatalf("RecordScan: %v", err)
 	}
 
-	second, err := s.CreateScan(ctx, "example.com", "")
+	second, err := s.RecordScan(ctx, "example.com", "", sampleFindings()[:1])
 	if err != nil {
-		t.Fatalf("CreateScan: %v", err)
-	}
-	newer := sampleFindings()[:1]
-	if err := s.SaveFindings(ctx, second, newer); err != nil {
-		t.Fatalf("SaveFindings: %v", err)
+		t.Fatalf("RecordScan: %v", err)
 	}
 
 	last, findings, err := s.LastScan(ctx, "example.com")
@@ -253,17 +239,14 @@ func TestListScansIsMostRecentFirstAndSeedScoped(t *testing.T) {
 
 	var ids []int64
 	for range 3 {
-		id, err := s.CreateScan(ctx, "example.com", "quick")
+		id, err := s.RecordScan(ctx, "example.com", "quick", sampleFindings())
 		if err != nil {
-			t.Fatalf("CreateScan: %v", err)
-		}
-		if err := s.SaveFindings(ctx, id, sampleFindings()); err != nil {
-			t.Fatalf("SaveFindings: %v", err)
+			t.Fatalf("RecordScan: %v", err)
 		}
 		ids = append(ids, id)
 	}
-	if _, err := s.CreateScan(ctx, "other.com", ""); err != nil {
-		t.Fatalf("CreateScan: %v", err)
+	if _, err := s.RecordScan(ctx, "other.com", "", nil); err != nil {
+		t.Fatalf("RecordScan: %v", err)
 	}
 
 	scans, err := s.ListScans(ctx, "example.com")
@@ -288,8 +271,8 @@ func TestListScansCountsAScanWithNoFindings(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
 
-	if _, err := s.CreateScan(ctx, "example.com", ""); err != nil {
-		t.Fatalf("CreateScan: %v", err)
+	if _, err := s.RecordScan(ctx, "example.com", "", nil); err != nil {
+		t.Fatalf("RecordScan: %v", err)
 	}
 
 	scans, err := s.ListScans(ctx, "example.com")
@@ -306,8 +289,8 @@ func TestSeedsAreNormalized(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
 
-	if _, err := s.CreateScan(ctx, "  Example.COM.  ", ""); err != nil {
-		t.Fatalf("CreateScan: %v", err)
+	if _, err := s.RecordScan(ctx, "  Example.COM.  ", "", nil); err != nil {
+		t.Fatalf("RecordScan: %v", err)
 	}
 
 	// A seed typed differently must not fork the history it is keyed by.
@@ -320,17 +303,55 @@ func TestSeedsAreNormalized(t *testing.T) {
 	}
 }
 
-func TestCreateScanRejectsAnEmptySeed(t *testing.T) {
-	if _, err := open(t).CreateScan(context.Background(), "   ", ""); err == nil {
-		t.Error("CreateScan(\"\") succeeded, want an error")
+func TestRecordScanRejectsAnEmptySeed(t *testing.T) {
+	if _, err := open(t).RecordScan(context.Background(), "   ", "", nil); err == nil {
+		t.Error("RecordScan(\"\") succeeded, want an error")
 	}
 }
 
-func TestSaveFindingsRejectsAnUnknownScan(t *testing.T) {
-	// The foreign key must be enforced, otherwise findings can outlive — or
-	// precede — the scan that owns them.
-	if err := open(t).SaveFindings(context.Background(), 999, sampleFindings()); err == nil {
-		t.Error("SaveFindings against an unknown scan succeeded, want an error")
+// A failed persist must leave nothing behind: a scan row committed without its
+// findings would read as an empty scan and become the baseline the next run
+// diffs against.
+func TestRecordScanIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	// A duplicate candidate violates the (scan_id, candidate) unique index
+	// partway through the findings, after the scan row was already inserted
+	// inside the transaction.
+	duplicated := append(sampleFindings(), sampleFindings()...)
+	if _, err := s.RecordScan(ctx, "example.com", "", duplicated); err == nil {
+		t.Fatal("RecordScan with duplicate candidates succeeded, want an error")
+	}
+
+	scans, err := s.ListScans(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("ListScans: %v", err)
+	}
+	if len(scans) != 0 {
+		t.Errorf("got %d scans after a failed RecordScan, want 0 — the scan row escaped the transaction", len(scans))
+	}
+}
+
+// The wildcard flag must survive persistence: a diff or gone row is rebuilt
+// from the store, and losing the flag there would re-present catch-all noise
+// as real registered look-alikes.
+func TestFindingsRoundTripTheWildcardFlag(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	findings := sampleFindings()
+	findings[0].Wildcard = true
+	if _, err := s.RecordScan(ctx, "example.com", "", findings); err != nil {
+		t.Fatalf("RecordScan: %v", err)
+	}
+
+	_, stored, err := s.LastScan(ctx, "example.com")
+	if err != nil {
+		t.Fatalf("LastScan: %v", err)
+	}
+	if len(stored) != 2 || !stored[0].Wildcard || stored[1].Wildcard {
+		t.Errorf("stored wildcard flags = %+v, want only the first finding flagged", stored)
 	}
 }
 
@@ -338,17 +359,12 @@ func TestSaveFindingsRejectsAnUnknownScan(t *testing.T) {
 func record(t *testing.T, s *store.SQLite, seed string, candidates ...string) {
 	t.Helper()
 
-	ctx := context.Background()
-	id, err := s.CreateScan(ctx, seed, "")
-	if err != nil {
-		t.Fatalf("CreateScan: %v", err)
-	}
 	findings := make([]store.Finding, 0, len(candidates))
 	for _, candidate := range candidates {
 		findings = append(findings, store.Finding{Candidate: candidate, Registrable: candidate})
 	}
-	if err := s.SaveFindings(ctx, id, findings); err != nil {
-		t.Fatalf("SaveFindings: %v", err)
+	if _, err := s.RecordScan(context.Background(), seed, "", findings); err != nil {
+		t.Fatalf("RecordScan: %v", err)
 	}
 }
 
@@ -556,23 +572,15 @@ func TestTriageSurvivesLaterScans(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
 
-	first, err := s.CreateScan(ctx, "example.com", "")
-	if err != nil {
-		t.Fatalf("CreateScan: %v", err)
-	}
-	if err := s.SaveFindings(ctx, first, sampleFindings()); err != nil {
-		t.Fatalf("SaveFindings: %v", err)
+	if _, err := s.RecordScan(ctx, "example.com", "", sampleFindings()); err != nil {
+		t.Fatalf("RecordScan: %v", err)
 	}
 	if _, err := s.SetTriage(ctx, "example.com", "xample.com", triage.StatusOwned, ""); err != nil {
 		t.Fatalf("SetTriage: %v", err)
 	}
 
-	second, err := s.CreateScan(ctx, "example.com", "")
-	if err != nil {
-		t.Fatalf("CreateScan: %v", err)
-	}
-	if err := s.SaveFindings(ctx, second, sampleFindings()); err != nil {
-		t.Fatalf("SaveFindings: %v", err)
+	if _, err := s.RecordScan(ctx, "example.com", "", sampleFindings()); err != nil {
+		t.Fatalf("RecordScan: %v", err)
 	}
 
 	verdicts, err := s.GetTriage(ctx, "example.com")

@@ -2,27 +2,38 @@ package engine
 
 import "golang.org/x/net/idna"
 
+// candidateProfile converts candidate labels to the wire form a registry or
+// browser would actually resolve.
+//
+// UTS 46 mapping (MapForLookup) is what makes the output canonical: it folds
+// case and width before punycoding, so a confusable like Cyrillic "З"
+// encodes to the same "xn--" form a browser would look up. Without it, the
+// bare Punycode profile encodes "Зoom" as "xn--oom-b9c" while the registrable
+// homograph is the lowercased "xn--oom-ydd" — a candidate that would resolve
+// NXDOMAIN forever while the real look-alike stays invisible. The mapping
+// also collapses fullwidth forms ("ｅxample") back to their ASCII originals,
+// which addCandidate then drops as equal to the seed instead of querying
+// unregistrable junk.
+//
+// CheckHyphens is disabled because the mapped profiles otherwise reject a
+// hyphen in the label's third and fourth position unless the label already
+// carries the "xn--" ACE prefix, which would silently drop real candidates
+// shaped like "ab--cd": the same shape as legitimate CDN hostnames (e.g.
+// "r3---sn-apo3qvuoxuxbt-j5pe") that browsers resolve every day without
+// complaint.
+var candidateProfile = idna.New(idna.MapForLookup(), idna.CheckHyphens(false))
+
 // ToASCII converts a label to the ASCII wire form DNS resolves, converting
-// non-ASCII labels to their punycode ("xn--") form.
+// non-ASCII labels to their canonical punycode ("xn--") form via
+// candidateProfile.
 //
-// It uses idna.ToASCII — the Punycode profile, which does minimal
-// validation — rather than the stricter Lookup or Registration profiles.
-// Those reject a hyphen in the label's third and fourth position unless the
-// label already carries the "xn--" ACE prefix, which would silently drop
-// real candidates shaped like "ab--cd": the same shape as legitimate CDN
-// hostnames (e.g. "r3---sn-apo3qvuoxuxbt-j5pe") that browsers resolve every
-// day without complaint. Rejecting only structurally unencodable input, and
-// letting DNS itself be the arbiter of whether an ASCII-safe label is
-// registered, is the conservative choice at candidate-generation time: it
-// would rather resolve one label too many than silently drop one a
-// squatter could actually register.
-//
-// ok is false only when label cannot be represented as a valid domain label
-// at all (malformed UTF-8, punycode overflow); the candidate it belongs to
-// is dropped rather than resolved, since there is nothing a DNS query could
+// ok is false when label cannot be represented as a registrable domain label
+// — malformed UTF-8, punycode overflow, or a rune IDNA2008 disallows
+// outright (so nobody could register it); the candidate it belongs to is
+// dropped rather than resolved, since there is nothing a DNS query could
 // meaningfully ask for.
 func ToASCII(label string) (ascii string, ok bool) {
-	out, err := idna.ToASCII(label)
+	out, err := candidateProfile.ToASCII(label)
 	if err != nil {
 		return "", false
 	}

@@ -77,6 +77,14 @@ func Diff(prior, current []Finding) DiffResult {
 		switch {
 		case !ok:
 			out[i].Diff = DiffNew
+		case previous.Error != "" || out[i].Error != "":
+			// A failed lookup stores its zero-valued signals alongside the
+			// error, and zeroes compared as answers would report a phantom
+			// lapse on the failure and a phantom change back on recovery. A
+			// finding that errored on either side is reported unchanged: the
+			// row still shows its error, but a lookup that failed is not
+			// evidence that anything moved.
+			out[i].Diff = DiffUnchanged
 		case signalsOf(previous) != signalsOf(out[i]):
 			out[i].Diff = DiffChanged
 		default:
@@ -164,6 +172,7 @@ func fromStore(findings []store.Finding) []Finding {
 			HasNS:       f.HasNS,
 			HasA:        f.HasA,
 			HasMX:       f.HasMX,
+			Wildcard:    f.Wildcard,
 			Addresses:   f.Addresses,
 			NS:          f.NS,
 			MX:          f.MX,
@@ -191,6 +200,7 @@ func toStore(findings []Finding) []store.Finding {
 			HasNS:       f.HasNS,
 			HasA:        f.HasA,
 			HasMX:       f.HasMX,
+			Wildcard:    f.Wildcard,
 			Addresses:   f.Addresses,
 			NS:          f.NS,
 			MX:          f.MX,

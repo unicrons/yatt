@@ -277,11 +277,8 @@ func persist(ctx context.Context, opts Options, seed string, result Result) (Res
 		return result, err
 	}
 
-	scanID, err := opts.Store.CreateScan(ctx, seed, opts.Profile)
+	scanID, err := opts.Store.RecordScan(ctx, seed, opts.Profile, toStore(result.Findings))
 	if err != nil {
-		return result, err
-	}
-	if err := opts.Store.SaveFindings(ctx, scanID, toStore(result.Findings)); err != nil {
 		return result, err
 	}
 

@@ -22,7 +22,12 @@ import (
 // timeFormat is the ISO-8601 convention every timestamp column uses. SQLite has
 // no native timestamp type and Postgres does, so pinning one textual format
 // keeps the two schemas readable and comparable.
-const timeFormat = time.RFC3339Nano
+//
+// The fractional second is fixed-width rather than RFC3339Nano: Nano trims
+// trailing zeros, and variable-width fractions do not sort as text ("...05.4Z"
+// compares after "...05.42Z" because 'Z' > '2'). Every ORDER BY created_at in
+// this file depends on the textual order being the chronological one.
+const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 // listSeparator joins the record slices stored in a single TEXT column. DNS
 // names and IP addresses never contain a comma, so the encoding is lossless and
@@ -80,66 +85,60 @@ func (s *SQLite) Path() string { return s.path }
 // Close implements Store.
 func (s *SQLite) Close() error { return s.db.Close() }
 
-// CreateScan implements Store.
-func (s *SQLite) CreateScan(ctx context.Context, seed string, profile string) (int64, error) {
+// RecordScan implements Store.
+//
+// The scan row and every finding commit in one transaction, so a scan can
+// never exist without its findings: a process killed or a disk filling up
+// mid-persist rolls the whole run back instead of leaving an empty scan row
+// as the next diff's baseline.
+func (s *SQLite) RecordScan(ctx context.Context, seed, profile string, findings []Finding) (int64, error) {
 	seed = NormalizeSeed(seed)
 	if seed == "" {
 		return 0, errors.New("store: empty seed")
 	}
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("store: recording scan for %s: %w", seed, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var id int64
 	// RETURNING works on SQLite 3.35+ and has always worked on Postgres, so the
 	// insert stays identical across both engines.
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`INSERT INTO scans (seed, profile, created_at) VALUES (?, ?, ?) RETURNING id`,
 		seed, profile, time.Now().UTC().Format(timeFormat),
 	).Scan(&id)
 	if err != nil {
-		return 0, fmt.Errorf("store: creating scan for %s: %w", seed, err)
+		return 0, fmt.Errorf("store: recording scan for %s: %w", seed, err)
 	}
-	return id, nil
-}
-
-// SaveFindings implements Store.
-//
-// All findings of a scan are written in one transaction, so a scan row is never
-// left referencing a half-written result set.
-func (s *SQLite) SaveFindings(ctx context.Context, scanID int64, findings []Finding) error {
-	if len(findings) == 0 {
-		return nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("store: saving findings: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO findings (
 			scan_id, candidate, registrable, technique,
-			registered, has_ns, has_a, has_mx,
+			registered, has_ns, has_a, has_mx, wildcard,
 			addresses, ns, mx, rcode, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return fmt.Errorf("store: saving findings: %w", err)
+		return 0, fmt.Errorf("store: recording scan for %s: %w", seed, err)
 	}
 	defer func() { _ = stmt.Close() }()
 
 	for _, f := range findings {
 		if _, err := stmt.ExecContext(ctx,
-			scanID, f.Candidate, f.Registrable, f.Technique,
-			boolToInt(f.Registered), boolToInt(f.HasNS), boolToInt(f.HasA), boolToInt(f.HasMX),
+			id, f.Candidate, f.Registrable, f.Technique,
+			boolToInt(f.Registered), boolToInt(f.HasNS), boolToInt(f.HasA), boolToInt(f.HasMX), boolToInt(f.Wildcard),
 			joinList(f.Addresses), joinList(f.NS), joinList(f.MX), f.Rcode, f.Error,
 		); err != nil {
-			return fmt.Errorf("store: saving finding %s: %w", f.Candidate, err)
+			return 0, fmt.Errorf("store: recording finding %s: %w", f.Candidate, err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: saving findings: %w", err)
+		return 0, fmt.Errorf("store: recording scan for %s: %w", seed, err)
 	}
-	return nil
+	return id, nil
 }
 
 // LastScan implements Store.
@@ -297,8 +296,8 @@ func (s *SQLite) LookupCandidate(ctx context.Context, seed, candidate string, li
 func (s *SQLite) seedsRecording(ctx context.Context, candidate, excluding string, limit int) ([]string, error) {
 	// GROUP BY with the aggregate aliased into the select list keeps the
 	// ordering legal under both engines' rules for DISTINCT/GROUP BY, and
-	// created_at sorts correctly as text because it is a fixed-offset ISO-8601
-	// timestamp.
+	// created_at sorts correctly as text because timeFormat is a fixed-width
+	// UTC ISO-8601 timestamp.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.seed, MAX(s.created_at) AS last_scan
 		FROM findings f
@@ -454,7 +453,7 @@ func (s *SQLite) queryTriage(ctx context.Context, query, seed string) ([]Triage,
 func (s *SQLite) findings(ctx context.Context, scanID int64) ([]Finding, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT candidate, registrable, technique,
-		       registered, has_ns, has_a, has_mx,
+		       registered, has_ns, has_a, has_mx, wildcard,
 		       addresses, ns, mx, rcode, error
 		FROM findings
 		WHERE scan_id = ?
@@ -467,13 +466,13 @@ func (s *SQLite) findings(ctx context.Context, scanID int64) ([]Finding, error) 
 	var findings []Finding
 	for rows.Next() {
 		var (
-			f                                   Finding
-			registered, hasNS, hasA, hasMX      int
-			addresses, nameservers, mailservers string
+			f                                        Finding
+			registered, hasNS, hasA, hasMX, wildcard int
+			addresses, nameservers, mailservers      string
 		)
 		if err := rows.Scan(
 			&f.Candidate, &f.Registrable, &f.Technique,
-			&registered, &hasNS, &hasA, &hasMX,
+			&registered, &hasNS, &hasA, &hasMX, &wildcard,
 			&addresses, &nameservers, &mailservers, &f.Rcode, &f.Error,
 		); err != nil {
 			return nil, fmt.Errorf("store: reading findings of scan %d: %w", scanID, err)
@@ -482,6 +481,7 @@ func (s *SQLite) findings(ctx context.Context, scanID int64) ([]Finding, error) 
 		f.HasNS = hasNS != 0
 		f.HasA = hasA != 0
 		f.HasMX = hasMX != 0
+		f.Wildcard = wildcard != 0
 		f.Addresses = splitList(addresses)
 		f.NS = splitList(nameservers)
 		f.MX = splitList(mailservers)
@@ -513,8 +513,12 @@ func splitList(value string) []string {
 	return strings.Split(value, listSeparator)
 }
 
+// parseTime reads a stored timestamp. Parsing uses RFC3339Nano rather than
+// timeFormat because Go's parser is lenient about fraction width under that
+// layout — it reads both the fixed-width form written today and any
+// variable-width RFC 3339 value an older database may hold.
 func parseTime(value string) (time.Time, error) {
-	t, err := time.Parse(timeFormat, value)
+	t, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("store: unparseable timestamp %q: %w", value, err)
 	}

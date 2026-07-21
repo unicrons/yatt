@@ -76,6 +76,13 @@ func (o *scanOptions) tlds() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--tld-file: %w", err)
 	}
+	if len(tlds) == 0 {
+		// An explicitly given file that yields nothing is an error, not a
+		// fallback: scan.Run treats an empty list as "no custom list" and
+		// would silently sweep the --tld-profile the file was meant to
+		// replace.
+		return nil, fmt.Errorf("--tld-file %s: no TLDs found (blank and # lines are ignored)", o.tldFile)
+	}
 	return tlds, nil
 }
 
@@ -129,7 +136,7 @@ func newScanCmd(global *globalOptions) *cobra.Command {
 		"add the enrichment-link column to the table (always present in json/ndjson output)")
 	flags.StringVar(&opts.profile, "profile", "",
 		"scan profile ("+strings.Join(config.Names(), ", ")+", or one defined in --config); "+
-			"sets technique/tld-profile/concurrency/timeout/limit, each still overridable by its own flag")
+			"sets technique/tld-profile/concurrency/qps/timeout/limit, each still overridable by its own flag")
 
 	return cmd
 }

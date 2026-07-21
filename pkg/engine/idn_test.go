@@ -33,6 +33,26 @@ func TestToASCII(t *testing.T) {
 			wantASCII: "ab--cd",
 			wantOK:    true,
 		},
+		{
+			// UTS 46 mapping folds case before punycoding. Without it the
+			// bare Punycode profile encodes "Зoom" as "xn--oom-b9c", a wire
+			// form no registry uses — the actually-registrable homograph is
+			// the lowercased one, and querying the wrong form reports a real
+			// registered look-alike as free.
+			name:      "an uppercase confusable maps to the registrable lowercase form",
+			label:     "Зoom", // Cyrillic 'З' (U+0417) replacing the 'Z'
+			wantASCII: "xn--oom-ydd",
+			wantOK:    true,
+		},
+		{
+			// Fullwidth forms map back to their ASCII originals under UTS 46,
+			// so a fullwidth substitution collapses to the seed itself and is
+			// dropped by addCandidate instead of being queried as junk.
+			name:      "a fullwidth form maps back to plain ASCII",
+			label:     "ｅxample", // fullwidth 'ｅ' (U+FF45)
+			wantASCII: "example",
+			wantOK:    true,
+		},
 	}
 
 	for _, tt := range tests {

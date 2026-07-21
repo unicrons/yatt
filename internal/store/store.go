@@ -42,6 +42,7 @@ type Finding struct {
 	HasNS       bool
 	HasA        bool
 	HasMX       bool
+	Wildcard    bool
 	Addresses   []string
 	NS          []string
 	MX          []string
@@ -82,10 +83,12 @@ type CandidateOrigin struct {
 
 // Store records scans and reads back the history of a seed.
 type Store interface {
-	// CreateScan records a new run and returns its identifier.
-	CreateScan(ctx context.Context, seed string, profile string) (int64, error)
-	// SaveFindings attaches findings to a scan.
-	SaveFindings(ctx context.Context, scanID int64, findings []Finding) error
+	// RecordScan records a new run together with its findings, atomically,
+	// and returns the scan's identifier. One transaction is the contract, not
+	// an implementation detail: a scan row committed without its findings
+	// would read as an empty scan and become the baseline the next run diffs
+	// against, silently resetting every candidate to "new".
+	RecordScan(ctx context.Context, seed, profile string, findings []Finding) (int64, error)
 	// LastScan returns the most recent scan of seed and its findings. It
 	// returns a nil scan and no error when the seed has never been scanned, so
 	// a first run is an ordinary outcome rather than an error path.

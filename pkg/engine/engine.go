@@ -220,6 +220,10 @@ func addCandidate(seed Seed, t Technique, sld, suffix string, seen map[string]bo
 	if !ok {
 		return
 	}
+	suffix, ok = toASCIIDomain(suffix)
+	if !ok {
+		return
+	}
 	if ascii == seed.SLD && suffix == seed.Suffix {
 		// Equal to the seed itself: WithOriginal already guards against this
 		// independently, but refusing it here too means a stray duplicate
@@ -247,12 +251,37 @@ func addCandidate(seed Seed, t Technique, sld, suffix string, seen map[string]bo
 }
 
 // Original returns the seed's own row, shaped like a candidate.
+//
+// Every part is converted to its DNS wire form, exactly as addCandidate does
+// for generated candidates: an IDN seed like "münchen.de" must be queried
+// (and stored) as "xn--mnchen-3ya.de" — the resolver sends names verbatim,
+// and raw UTF-8 on the wire answers NXDOMAIN, which would record the user's
+// own domain as unregistered. A part that cannot be converted is kept as
+// given: the seed's row must exist even when the query for it can only fail.
 func Original(seed Seed) Candidate {
+	sld := seed.SLD
+	if ascii, ok := ToASCII(seed.SLD); ok {
+		sld = ascii
+	}
+	suffix := seed.Suffix
+	if ascii, ok := toASCIIDomain(seed.Suffix); ok {
+		suffix = ascii
+	}
+	subdomain := seed.Subdomain
+	if ascii, ok := toASCIIDomain(seed.Subdomain); ok {
+		subdomain = ascii
+	}
+
+	registrable := sld + "." + suffix
+	domain := registrable
+	if subdomain != "" {
+		domain = subdomain + "." + registrable
+	}
 	return Candidate{
-		Domain:      seed.String(),
-		Registrable: seed.Registrable(),
-		SLD:         seed.SLD,
-		Suffix:      seed.Suffix,
+		Domain:      domain,
+		Registrable: registrable,
+		SLD:         sld,
+		Suffix:      suffix,
 		Technique:   TechniqueOriginal,
 	}
 }
@@ -301,6 +330,25 @@ func ValidLabel(s string) bool {
 		}
 	}
 	return true
+}
+
+// toASCIIDomain converts every dot-separated label of name to its DNS wire
+// form. It exists because ToASCII operates on a single label, while suffixes
+// and subdomains may carry dots ("co.uk", "a.b"). An empty name converts to
+// itself, so an absent subdomain stays absent.
+func toASCIIDomain(name string) (string, bool) {
+	if name == "" {
+		return "", true
+	}
+	labels := strings.Split(name, ".")
+	for i, label := range labels {
+		ascii, ok := ToASCII(label)
+		if !ok {
+			return "", false
+		}
+		labels[i] = ascii
+	}
+	return strings.Join(labels, "."), true
 }
 
 // validSuffix reports whether s can be a public suffix: one or more

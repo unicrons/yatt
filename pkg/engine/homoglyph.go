@@ -1,6 +1,10 @@
 package engine
 
-import "github.com/andoniaf/yatt/pkg/engine/data"
+import (
+	"strings"
+
+	"github.com/andoniaf/yatt/pkg/engine/data"
+)
 
 func init() {
 	Register(Homoglyph{})
@@ -40,10 +44,25 @@ func (h Homoglyph) Permute(sld string) []string {
 // require; every other suffix gets the full merged table.
 func (Homoglyph) PermuteWithSuffix(sld, suffix string) []string {
 	glyphs := data.GlyphsASCII
-	if !data.IDNGatedTLDs[suffix] {
+	if !idnGated(suffix) {
 		glyphs = data.Merge(data.GlyphsASCII, data.GlyphsUnicode)
 	}
 	return Homoglyph{}.permute(sld, glyphs)
+}
+
+// idnGated reports whether suffix falls under a TLD in data.IDNGatedTLDs.
+// The map keys bare TLDs, but a seed's public suffix is often multi-label
+// ("co.jp", "com.cn"), so the suffix's last label is what decides: the IDN
+// policy that gates "example.jp" is the same registry policy that gates
+// "example.co.jp".
+func idnGated(suffix string) bool {
+	if data.IDNGatedTLDs[suffix] {
+		return true
+	}
+	if i := strings.LastIndex(suffix, "."); i >= 0 {
+		return data.IDNGatedTLDs[suffix[i+1:]]
+	}
+	return false
 }
 
 func (Homoglyph) permute(sld string, glyphs map[string][]string) []string {

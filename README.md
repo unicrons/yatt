@@ -195,6 +195,7 @@ profiles:
     techniques: [omission, transposition, keyboard, tld]
     tld_profile: full
     concurrency: 30
+    timeout: 5s          # a duration string; a bare number is rejected as ambiguous
     limit: 300
 ```
 

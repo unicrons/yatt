@@ -183,13 +183,20 @@ func (c *Config) Names() []string {
 // An empty name resolves to the zero Profile, which changes nothing — that
 // is how a scan with no profile selected behaves exactly as if profiles did
 // not exist.
+//
+// The name is matched case-insensitively against builtins and config-file
+// profiles alike. Viper already lowercases config keys, so without folding
+// the builtin lookup too, "--profile QUICK" would miss the builtin while
+// still matching a config-file "profiles.quick" section — overlaying the
+// file's fields onto a zero Profile instead of the builtin preset.
 func (c *Config) Resolve(name string) (Profile, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" {
 		return Profile{}, nil
 	}
 
 	profile, known := Builtins[name]
-	key := "profiles." + strings.ToLower(name)
+	key := "profiles." + name
 	if c.v.IsSet(key) {
 		if err := c.v.UnmarshalKey(key, &profile); err != nil {
 			return Profile{}, fmt.Errorf("config: profile %q: %w", name, err)
@@ -199,5 +206,24 @@ func (c *Config) Resolve(name string) (Profile, error) {
 	if !known {
 		return Profile{}, fmt.Errorf("unknown profile %q (available: %s)", name, strings.Join(c.Names(), ", "))
 	}
+	if err := profile.validate(name); err != nil {
+		return Profile{}, err
+	}
 	return profile, nil
+}
+
+// validate rejects profile values that can only be a config-file mistake.
+//
+// The timeout check exists because a bare YAML number decodes into a
+// time.Duration as nanoseconds — viper's duration hook converts only strings
+// — so `timeout: 5` silently becomes five nanoseconds and every DNS query in
+// the scan times out. No DNS timeout below a millisecond is plausible, so
+// anything under it is diagnosed instead of applied.
+func (p Profile) validate(name string) error {
+	if p.Timeout != 0 && p.Timeout < time.Millisecond {
+		return fmt.Errorf(
+			"config: profile %q: timeout %v is less than 1ms — a bare number is read as nanoseconds; write a duration string such as \"5s\"",
+			name, p.Timeout)
+	}
+	return nil
 }
