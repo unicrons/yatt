@@ -47,6 +47,12 @@ type Signature struct {
 	// Addresses are the addresses every probe agreed on, sorted. Empty means the
 	// zone is not a catch-all.
 	Addresses []string
+	// SuppressesNXDOMAIN reports that the zone answered NOERROR for a name
+	// that does not exist. Under such a zone an rcode-based registration test
+	// is meaningless: "not NXDOMAIN" is what every name gets, registered or
+	// not. Some registries (.gov, .ph, .fm) answer this way without handing
+	// out addresses, so this is independent of Wildcard().
+	SuppressesNXDOMAIN bool
 }
 
 // Wildcard reports whether the zone answers for names that do not exist.
@@ -149,9 +155,14 @@ func (d *Detector) probe(ctx context.Context, zone string) (Signature, error) {
 		if err != nil {
 			return sig, err
 		}
-		addresses, err := d.addresses(ctx, label+"."+zone)
+		addresses, aNoError, err := d.addresses(ctx, label+"."+zone)
 		if err != nil {
 			return sig, err
+		}
+		if i == 0 {
+			// One probe settles it either way: a zone either signals
+			// non-existence with NXDOMAIN or it does not.
+			sig.SuppressesNXDOMAIN = aNoError
 		}
 		if len(addresses) == 0 {
 			// One honest NXDOMAIN settles it: a zone that lets a nonexistent
@@ -185,16 +196,23 @@ func (d *Detector) probe(ctx context.Context, zone string) (Signature, error) {
 	return sig, nil
 }
 
-// addresses resolves a name's A and AAAA records into a set.
-func (d *Detector) addresses(ctx context.Context, name string) (map[string]bool, error) {
+// addresses resolves a name's A and AAAA records into a set. It also reports
+// whether the A response was NOERROR: only the A rcode can tell an
+// NXDOMAIN-suppressing zone from an honest one, because an honest zone
+// answers AAAA with NOERROR-empty for any v4-only name.
+func (d *Detector) addresses(ctx context.Context, name string) (map[string]bool, bool, error) {
 	out := map[string]bool{}
+	var aNoError bool
 	for _, qtype := range []uint16{dns.TypeA, dns.TypeAAAA} {
 		resp, err := d.resolver.Query(ctx, name, qtype)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if resp.Rcode != dns.RcodeSuccess {
 			continue
+		}
+		if qtype == dns.TypeA {
+			aNoError = true
 		}
 		for _, rr := range resp.Answer {
 			switch record := rr.(type) {
@@ -205,7 +223,7 @@ func (d *Detector) addresses(ctx context.Context, name string) (map[string]bool,
 			}
 		}
 	}
-	return out, nil
+	return out, aNoError, nil
 }
 
 // labelAlphabet is the DNS-legal character set a probe label is drawn from.

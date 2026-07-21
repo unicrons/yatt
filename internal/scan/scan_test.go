@@ -229,6 +229,100 @@ func TestProgressReporting(t *testing.T) {
 	}
 }
 
+// suppressingZoneResolver models a registry (.gov, .ph, .fm) that answers
+// NOERROR for names that do not exist: every query under the zone comes back
+// NOERROR with no records, except the names given a real NS delegation.
+// Everything outside the zone is NXDOMAIN.
+type suppressingZoneResolver struct {
+	zone      string
+	delegated map[string]bool
+}
+
+func (r suppressingZoneResolver) Query(_ context.Context, name string, qtype uint16) (*dns.Msg, error) {
+	msg := &dns.Msg{}
+	msg.SetQuestion(dns.Fqdn(name), qtype)
+
+	trimmed := strings.TrimSuffix(dns.Fqdn(name), ".")
+	if !strings.HasSuffix(trimmed, "."+r.zone) {
+		msg.Rcode = dns.RcodeNameError
+		return msg, nil
+	}
+	msg.Rcode = dns.RcodeSuccess
+	if qtype == dns.TypeNS && r.delegated[trimmed] {
+		msg.Answer = append(msg.Answer, &dns.NS{
+			Hdr: dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeNS},
+			Ns:  "ns1.example.net.",
+		})
+	}
+	return msg, nil
+}
+
+// findingFor returns the finding for a candidate, failing the test if the scan
+// never produced it.
+func findingFor(t *testing.T, findings []scan.Finding, candidate string) scan.Finding {
+	t.Helper()
+	for _, f := range findings {
+		if f.Candidate == candidate {
+			return f
+		}
+	}
+	t.Fatalf("no finding for %q in %+v", candidate, findings)
+	return scan.Finding{}
+}
+
+// TestRunSuppressingZoneZeroRecordCandidateIsUnregistered guards against the
+// .gov/.ph/.fm false positives: a zone that answers NOERROR for names that do
+// not exist must not make every zero-record candidate under it look
+// registered.
+func TestRunSuppressingZoneZeroRecordCandidateIsUnregistered(t *testing.T) {
+	t.Parallel()
+
+	result, err := scan.Run(context.Background(), scan.Options{
+		Seed:       "example.com",
+		Resolver:   suppressingZoneResolver{zone: "gov"},
+		Techniques: []engine.Technique{engine.TLD{}},
+		TLDs:       []string{"gov"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	finding := findingFor(t, result.Findings, "example.gov")
+	if finding.Registered {
+		t.Error("Registered = true, want false: the zone answers NOERROR for nonexistent names")
+	}
+	// The rcode is what DNS actually said; only its reading as registration
+	// changes.
+	if finding.Rcode != "NOERROR" {
+		t.Errorf("Rcode = %q, want NOERROR", finding.Rcode)
+	}
+}
+
+// TestRunSuppressingZoneDelegatedCandidateStaysRegistered is the other half:
+// a genuinely registered name in a suppressing zone still has a real NS
+// delegation, and that must keep it reported as registered.
+func TestRunSuppressingZoneDelegatedCandidateStaysRegistered(t *testing.T) {
+	t.Parallel()
+
+	result, err := scan.Run(context.Background(), scan.Options{
+		Seed:       "example.com",
+		Resolver:   suppressingZoneResolver{zone: "gov", delegated: map[string]bool{"example.gov": true}},
+		Techniques: []engine.Technique{engine.TLD{}},
+		TLDs:       []string{"gov"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	finding := findingFor(t, result.Findings, "example.gov")
+	if !finding.Registered {
+		t.Error("Registered = false, want true: the candidate has a real NS delegation")
+	}
+	if !finding.HasNS {
+		t.Error("HasNS = false, want true")
+	}
+}
+
 // resolverFunc adapts a function to the resolver interface.
 type resolverFunc func(ctx context.Context, name string, qtype uint16) (*dns.Msg, error)
 

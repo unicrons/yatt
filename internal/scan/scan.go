@@ -267,6 +267,14 @@ func resolveOne(ctx context.Context, r resolver.Resolver, detector *wildcard.Det
 		return finding, nil
 	}
 	finding.Wildcard = !signature.IsReal(finding.Addresses)
+	// Some registries answer NOERROR for names that do not exist, which the
+	// rcode-based registration test reads as "registered". A genuinely
+	// registered name in such a zone still shows a real delegation or records,
+	// so only the zero-record candidates flip. Rcode stays as reported: the
+	// zone did say NOERROR; it just does not mean registration there.
+	if signature.SuppressesNXDOMAIN && finding.Registered && !finding.HasNS && !finding.HasA && !finding.HasMX {
+		finding.Registered = false
+	}
 	return finding, nil
 }
 

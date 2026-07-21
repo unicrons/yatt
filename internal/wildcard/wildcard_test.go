@@ -219,6 +219,62 @@ func TestSignatureNormalizesTheZone(t *testing.T) {
 	}
 }
 
+func TestSignatureDetectsAnNXDOMAINSuppressingZone(t *testing.T) {
+	// The .gov/.ph/.fm shape: NOERROR for a name that does not exist, but no
+	// addresses either. Not a catch-all — there is no baseline to subtract —
+	// yet the rcode-based registration test is meaningless under it.
+	noErrorEmpty := resolverFunc(func(_ context.Context, name string, qtype uint16) (*dns.Msg, error) {
+		m := new(dns.Msg)
+		m.Rcode = dns.RcodeSuccess
+		return m, nil
+	})
+
+	sig, err := wildcard.New(noErrorEmpty).Signature(context.Background(), "gov")
+	if err != nil {
+		t.Fatalf("Signature: %v", err)
+	}
+	if !sig.SuppressesNXDOMAIN {
+		t.Error("SuppressesNXDOMAIN = false, want true for a zone answering NOERROR for nonexistent names")
+	}
+	if sig.Wildcard() {
+		t.Errorf("Wildcard() = true with addresses %v, want false: the zone hands out no addresses", sig.Addresses)
+	}
+}
+
+func TestSignatureOfAnHonestZoneDoesNotSuppressNXDOMAIN(t *testing.T) {
+	// catchAllResolver with no zones answers NXDOMAIN on A, which is exactly
+	// what an honest registry does.
+	fake := &catchAllResolver{}
+
+	sig, err := wildcard.New(fake).Signature(context.Background(), "com")
+	if err != nil {
+		t.Fatalf("Signature: %v", err)
+	}
+	if sig.SuppressesNXDOMAIN {
+		t.Error("SuppressesNXDOMAIN = true, want false for a zone that answers NXDOMAIN honestly")
+	}
+	if sig.Wildcard() {
+		t.Errorf("Wildcard() = true with addresses %v, want false", sig.Addresses)
+	}
+}
+
+func TestSignatureOfACatchAllZoneAlsoSuppressesNXDOMAIN(t *testing.T) {
+	// A zone that answers every name with an address necessarily never says
+	// NXDOMAIN either, so both flags hold at once.
+	fake := &catchAllResolver{zones: map[string][]string{"example": {"192.0.2.1"}}}
+
+	sig, err := wildcard.New(fake).Signature(context.Background(), "example")
+	if err != nil {
+		t.Fatalf("Signature: %v", err)
+	}
+	if !sig.Wildcard() {
+		t.Error("Wildcard() = false, want true")
+	}
+	if !sig.SuppressesNXDOMAIN {
+		t.Error("SuppressesNXDOMAIN = false, want true: a catch-all never answers NXDOMAIN")
+	}
+}
+
 func TestSignaturePropagatesResolverErrors(t *testing.T) {
 	fake := &catchAllResolver{err: errors.New("i/o timeout")}
 
