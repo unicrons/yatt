@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/andoniaf/yatt/internal/config"
 	"github.com/andoniaf/yatt/internal/render"
 	"github.com/andoniaf/yatt/internal/resolver"
 	"github.com/andoniaf/yatt/internal/scan"
@@ -30,6 +31,8 @@ type scanOptions struct {
 	tldFile          string
 	limit            int
 	showUnregistered bool
+	profile          string
+	wide             bool
 }
 
 // triageFilter resolves the triage flags, rejecting the run if any status is
@@ -122,14 +125,82 @@ func newScanCmd(global *globalOptions) *cobra.Command {
 		"cap the total candidate count after per-technique capping (0 for unlimited)")
 	flags.BoolVar(&opts.showUnregistered, "show-unregistered", false,
 		"also report candidates nobody has registered")
+	flags.BoolVar(&opts.wide, "wide", false,
+		"add the enrichment-link column to the table (always present in json/ndjson output)")
+	flags.StringVar(&opts.profile, "profile", "",
+		"scan profile ("+strings.Join(config.Names(), ", ")+", or one defined in --config); "+
+			"sets technique/tld-profile/concurrency/timeout/limit, each still overridable by its own flag")
 
 	return cmd
 }
 
+// profileFlags maps a Profile field's own name (config.Profile's
+// mapstructure tag, also what a config file author writes) to the flag that
+// overrides it, so applyProfile can tell a preset from a choice the user
+// actually typed.
+var profileFlags = map[string]string{
+	"techniques":  "technique",
+	"tld_profile": "tld-profile",
+	"concurrency": "concurrency",
+	"qps":         "qps",
+	"timeout":     "timeout",
+	"limit":       "limit",
+}
+
+// applyProfile overlays a resolved profile onto the flags governing a scan:
+// every field the profile sets is applied, except one the corresponding flag
+// was actually given — that flag's value stands regardless of what the
+// profile says, so naming a profile is never a way to fight a flag typed
+// right next to it.
+func applyProfile(cmd *cobra.Command, global *globalOptions, opts *scanOptions, profile config.Profile) {
+	flags := cmd.Flags()
+	profile = profile.Overlay(func(field string) bool {
+		return flags.Changed(profileFlags[field])
+	})
+
+	if len(profile.Techniques) > 0 {
+		opts.technique = profile.Techniques
+	}
+	if profile.TLDProfile != "" {
+		opts.tldProfile = profile.TLDProfile
+	}
+	if profile.Limit != 0 {
+		opts.limit = profile.Limit
+	}
+	if profile.Concurrency != 0 {
+		global.concurrency = profile.Concurrency
+	}
+	if profile.QPS != 0 {
+		global.qps = profile.QPS
+	}
+	if profile.Timeout != 0 {
+		global.timeout = profile.Timeout
+	}
+}
+
 func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed string) error {
-	renderer, err := render.New(global.output)
+	var renderOpts []render.Option
+	if opts.wide {
+		renderOpts = append(renderOpts, render.Wide())
+	}
+	renderer, err := render.New(global.output, renderOpts...)
 	if err != nil {
 		return err
+	}
+
+	// The profile is resolved and applied before anything below reads
+	// opts/global, so every flag it can set — technique, tld-profile,
+	// concurrency, qps, timeout, limit — sees the profile's value unless the
+	// matching flag was itself given. ProfileName already resolves --profile
+	// over YATT_PROFILE over a top-level "profile" key in the config file,
+	// since --profile was bound to the same Config in root.go.
+	profileName := global.config.ProfileName()
+	if profileName != "" {
+		profile, err := global.config.Resolve(profileName)
+		if err != nil {
+			return err
+		}
+		applyProfile(cmd, global, opts, profile)
 	}
 
 	filter, err := opts.triageFilter()
@@ -169,6 +240,7 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 		Resolver:    dnsResolver,
 		Techniques:  techniques,
 		Store:       scanStore,
+		Profile:     profileName,
 		Concurrency: global.concurrency,
 		QPS:         global.qps,
 		TLDProfile:  opts.tldProfile,

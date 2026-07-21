@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/andoniaf/yatt/internal/config"
 	"github.com/andoniaf/yatt/internal/render"
 	"github.com/andoniaf/yatt/internal/resolver"
 	"github.com/andoniaf/yatt/internal/scan"
@@ -31,6 +32,11 @@ type globalOptions struct {
 	qps         float64
 	db          string
 	verbose     bool
+	configPath  string
+	// config is resolved once per invocation, in PersistentPreRunE, once every
+	// flag the command was actually given is known — a scan profile is applied
+	// against that, not against the flags as declared.
+	config *config.Config
 }
 
 // openStore opens the scan database, defaulting to a per-user location when
@@ -75,6 +81,24 @@ func NewRootCmd() *cobra.Command {
 	flags.StringVar(&opts.db, "db", "",
 		"scan database path (default: yatt/yatt.db under the user config directory)")
 	flags.BoolVarP(&opts.verbose, "verbose", "v", false, "log scan progress to stderr")
+	flags.StringVar(&opts.configPath, "config", "",
+		"config file (YAML/JSON/TOML) defining scan profiles (default: none)")
+
+	// Resolving the config happens once, after Cobra has parsed every flag the
+	// invoked command was given: a bound flag only outranks the config file and
+	// YATT_-prefixed environment variables once it can be asked whether the
+	// user actually set it, and that answer only exists post-parse.
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		cfg := config.New()
+		if err := cfg.BindPFlags(cmd.Flags()); err != nil {
+			return err
+		}
+		if err := cfg.Load(opts.configPath); err != nil {
+			return err
+		}
+		opts.config = cfg
+		return nil
+	}
 
 	root.AddCommand(newScanCmd(opts))
 	root.AddCommand(newHistoryCmd(opts))
