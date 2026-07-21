@@ -24,9 +24,8 @@ type keyboardRow struct {
 // and digits every one of them shares a position for. Each row is offset a
 // further half key-width from the one above, which is the standard ANSI/ISO
 // stagger and is what makes each key sit visually between the two keys of
-// the row above and below it. See PROVENANCE.md — this is rebuilt from the
-// physical layouts themselves, not copied from any reference tool's
-// adjacency table.
+// the row above and below it. The adjacency table is computed from the
+// physical layouts themselves; see PROVENANCE.md.
 var keyboardLayouts = map[string][]keyboardRow{
 	"qwerty": {
 		{keys: "1234567890", offset: 0},

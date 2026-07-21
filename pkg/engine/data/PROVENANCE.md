@@ -1,19 +1,11 @@
 # Data table provenance
 
-`yatt` is currently a private repository, so this file is not (yet) a legal
-attribution document. It exists so the eventual licensing/attribution pass —
-deferred per the design discussion — is mechanical rather than
-archaeological: every table below names the primary source it was built
-from, and, where a reference tool's table was consulted for coverage rather
-than copied, says so explicitly.
-
-**Nothing in this package is copied from `urlinsane` (GPL-3.0).** That tool
-was not read, referenced, or used as a coverage check for any table here.
+This file records the primary source behind each data table in this package
+and how the generated ones regenerate.
 
 ## `keyboards.go` — keyboard adjacency (qwerty, qwertz, azerty)
 
-**Source: rebuilt from the physical layouts, not copied from any reference
-tool's table.**
+**Source: rebuilt from the physical layouts.**
 
 Each layout is expressed as its physical rows (the characters on each row,
 left to right) plus a per-row horizontal stagger of half a key-width — the
@@ -25,22 +17,18 @@ neighbors (distance 1) and the two staggered diagonal neighbors in the row
 above/below (distance ≈1.118), while excluding a same-row key two positions
 over or a key two rows away.
 
-This was spot-checked against the neighbor *sets* dnstwist's public,
-Apache-2.0-licensed `qwerty`/`qwertz`/`azerty` tables produce (e.g. both
-compute `s` on qwerty as neighboring `{a,d,e,w,x,z}`) purely to sanity-check
-that the geometric model reproduces correct physical adjacency — no code or
-literal table was copied from dnstwist or any other source; the Go source
-that computes the tables is the only artifact checked in.
+The result was sanity-checked against the neighbor *sets* dnstwist's
+`qwerty`/`qwertz`/`azerty` tables produce (e.g. both compute `s` on qwerty
+as neighboring `{a,d,e,w,x,z}`) to confirm the geometric model reproduces
+correct physical adjacency; the Go source that computes the tables is the
+only artifact checked in.
 
 ## `glyphs_ascii.go` — ASCII look-alike substitutions
 
-**Source: independently authored from widely known, generic knowledge of
-ASCII homoglyphs** (digit/letter look-alikes such as `0`/`o`, `1`/`l`/`i`,
-`3`/`e`, `5`/`s`; and the classic multi-character illusions `rn`→`m`,
-`vv`→`w`, `cl`→`d`). These substitutions are documented across many public
-typosquatting write-ups and are not particular to, or copied from, any one
-tool's source or data file — no code or table was read from dnstwist,
-ail-typo-squatting, or urlinsane while writing this file.
+**Source: widely known ASCII homoglyphs** (digit/letter look-alikes such as
+`0`/`o`, `1`/`l`/`i`, `3`/`e`, `5`/`s`; and the classic multi-character
+illusions `rn`→`m`, `vv`→`w`, `cl`→`d`). These substitutions are documented
+across many public typosquatting write-ups.
 
 ## `glyphs_unicode.go` — Unicode confusable substitutions
 
@@ -77,47 +65,37 @@ The generated file's header records the exact upstream version and date it came
 from, so a stale snapshot is visible rather than merely possible. Regenerating
 is expected to produce a reviewable diff: each Unicode release adds confusables.
 
-Cross-checked only for *coverage shape* against dnstwist's Apache-2.0
-`glyphs_unicode` table and ail-typo-squatting's BSD-2-Clause `SIMILAR_CHAR`
-table (i.e., "does our confusables.txt-derived table also flag the
-well-known Cyrillic а/е/о/р/с/у/х and Greek ο/υ homographs those tools
-flag?" — yes) — no code or literal table entries were copied from either.
+Coverage was sanity-checked against dnstwist's `glyphs_unicode` table and
+ail-typo-squatting's `SIMILAR_CHAR` table: the well-known Cyrillic
+а/е/о/р/с/у/х and Greek ο/υ homographs those tools flag are all covered
+here.
 
 ## `glyphs_idn_by_tld.go` — per-TLD IDN gating
 
-**Source: curated, independently assembled**, based on general public
-knowledge of which ccTLD registries restrict registrations to a single
+**Source: curated from general public knowledge** of which ccTLD
+registries restrict registrations to a single
 non-Latin script (so a Latin-confusable candidate could never be registered
 there) or have historically not offered broad IDN registration. This is a
 conservative starting set, not an audit of current registry policy — see
 the file's own doc comment for what an incomplete list costs (nothing but
 an extra query that resolves to NXDOMAIN).
 
-Conceptually mirrors what dnstwist's `glyphs_idn_by_tld` table is *for*
-(suppressing IDN homoglyph noise under ccTLDs that cannot register them) —
-no entries or code were copied from dnstwist's table, which is keyed and
-structured completely differently (a full glyph-subset table per TLD,
-rather than a suppress/allow set).
+Conceptually mirrors what dnstwist's `glyphs_idn_by_tld` table is *for*:
+suppressing IDN homoglyph noise under ccTLDs that cannot register them.
 
 ## `tlds_common.go` — curated common TLD list
 
-**Source: independently assembled** from the classic gTLDs (`com`, `net`,
-`org`, ...), the short list of gTLDs commonly used as brand extensions
-(`io`, `co`, `app`, `dev`, ...), and the ccTLDs of the countries with the
-largest internet-user populations. Not copied from dnstwist's
-`dictionaries/common_tlds.dict` or any other reference tool's list, though
-the *concept* of "common TLD" necessarily overlaps heavily with any such
-list — `.com`/`.net`/`.org` being common is a fact about the DNS, not
-someone's creative selection.
+**Source: assembled** from the classic gTLDs (`com`, `net`, `org`, ...),
+the short list of gTLDs commonly used as brand extensions (`io`, `co`,
+`app`, `dev`, ...), and the ccTLDs of the countries with the largest
+internet-user populations.
 
 ## `tlds_abused.go` — curated abused TLD list
 
-**Source: independently assembled** from the TLDs repeatedly named in
-publicly published registrar-abuse research (Spamhaus' and Interisle's
-periodic "most abused TLD" reports, and similar public reporting) as
-disproportionately represented in phishing/typosquatting takedown data.
-Not copied from dnstwist's `dictionaries/abused_tlds.dict` or any other
-single source.
+**Source: assembled** from the TLDs repeatedly named in publicly published
+registrar-abuse research (Spamhaus' and Interisle's periodic "most abused
+TLD" reports, and similar public reporting) as disproportionately
+represented in phishing/typosquatting takedown data.
 
 ## `tlds_iana.go` — full IANA TLD list
 
