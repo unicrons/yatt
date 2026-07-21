@@ -34,9 +34,9 @@ func TestPermuteAllTechniquesIsDeterministic(t *testing.T) {
 }
 
 // TestPermuteAllTechniquesOrdersNearestFirst asserts the ordering cap.go's
-// truncation relies on: the single-character-edit techniques
-// (omission, transposition, keyboard) lead the candidate list, ahead of the
-// two fan-out techniques (tld, homoglyph).
+// truncation relies on: the single-character-edit techniques (omission,
+// transposition, keyboard, addition, hyphenation, vowel-swap) lead the
+// candidate list, ahead of the two fan-out techniques (tld, homoglyph).
 func TestPermuteAllTechniquesOrdersNearestFirst(t *testing.T) {
 	seed, err := engine.ParseSeed("example.com")
 	if err != nil {
@@ -48,7 +48,10 @@ func TestPermuteAllTechniquesOrdersNearestFirst(t *testing.T) {
 		t.Fatal("no candidates produced")
 	}
 
-	nearest := map[string]bool{"omission": true, "transposition": true, "keyboard": true}
+	nearest := map[string]bool{
+		"omission": true, "transposition": true, "keyboard": true,
+		"addition": true, "hyphenation": true, "vowel-swap": true,
+	}
 	fanOut := map[string]bool{"tld": true, "homoglyph": true}
 
 	seenFanOut := false

@@ -53,7 +53,7 @@ var Builtins = map[string]Profile{
 		Timeout:     3 * time.Second,
 	},
 	"full": {
-		Techniques:  []string{"omission", "transposition", "keyboard", "homoglyph", "tld"},
+		Techniques:  []string{"omission", "transposition", "keyboard", "addition", "hyphenation", "vowel-swap", "homoglyph", "tld"},
 		TLDProfile:  "full",
 		Concurrency: 50,
 	},
