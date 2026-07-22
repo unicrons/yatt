@@ -11,6 +11,11 @@ linters:
     - revive
     - unconvert
   settings:
+    misspell:
+      ignore-rules:
+        # The example domain used across engine tests, not a typo of
+        # "unicorns".
+        - unicrons
     revive:
       rules:
         - name: exported

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -53,17 +54,20 @@ func newTriageCmd(global *globalOptions) *cobra.Command {
 	return cmd
 }
 
-func runTriage(cmd *cobra.Command, global *globalOptions, opts *triageOptions, seed, candidate string) error {
+func runTriage(cmd *cobra.Command, global *globalOptions, opts *triageOptions, seed, candidate string) (retErr error) {
 	renderer, err := render.New(global.output)
 	if err != nil {
 		return err
 	}
 
-	scanStore, err := global.openStore()
+	scanStore, err := global.openStore(cmd)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = scanStore.Close() }()
+	// Close is part of the command's outcome, not cleanup: for a remote
+	// database it performs the upload and lock release, and swallowing its
+	// error would report success for a run whose data never left the machine.
+	defer func() { retErr = errors.Join(retErr, scanStore.Close()) }()
 
 	seed = store.NormalizeSeed(seed)
 	candidate = store.NormalizeCandidate(candidate)
@@ -186,17 +190,20 @@ func newTriageListCmd(global *globalOptions) *cobra.Command {
 	}
 }
 
-func runTriageList(cmd *cobra.Command, global *globalOptions, seed string) error {
+func runTriageList(cmd *cobra.Command, global *globalOptions, seed string) (retErr error) {
 	renderer, err := render.New(global.output)
 	if err != nil {
 		return err
 	}
 
-	scanStore, err := global.openStore()
+	scanStore, err := global.openStore(cmd)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = scanStore.Close() }()
+	// Close is part of the command's outcome, not cleanup: for a remote
+	// database it performs the upload and lock release, and swallowing its
+	// error would report success for a run whose data never left the machine.
+	defer func() { retErr = errors.Join(retErr, scanStore.Close()) }()
 
 	seed = store.NormalizeSeed(seed)
 	entries, err := scanStore.ListTriage(cmd.Context(), seed)

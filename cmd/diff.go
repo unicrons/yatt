@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -26,17 +27,20 @@ func newDiffCmd(global *globalOptions) *cobra.Command {
 	}
 }
 
-func runDiff(cmd *cobra.Command, global *globalOptions, seed string) error {
+func runDiff(cmd *cobra.Command, global *globalOptions, seed string) (retErr error) {
 	renderer, err := render.New(global.output, global.renderOptions()...)
 	if err != nil {
 		return err
 	}
 
-	scanStore, err := global.openStore()
+	scanStore, err := global.openStore(cmd)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = scanStore.Close() }()
+	// Close is part of the command's outcome, not cleanup: for a remote
+	// database it performs the upload and lock release, and swallowing its
+	// error would report success for a run whose data never left the machine.
+	defer func() { retErr = errors.Join(retErr, scanStore.Close()) }()
 
 	comparison, err := scan.CompareLast(cmd.Context(), scanStore, store.NormalizeSeed(seed))
 	if err != nil {
