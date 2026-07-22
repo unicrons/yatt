@@ -228,8 +228,10 @@ yatt state push --db s3://my-bucket/yatt/yatt.db     # one-time migration of the
 yatt scan example.com --db s3://my-bucket/yatt/yatt.db
 ```
 
-Credentials come from the standard AWS chain (environment, shared config, SSO, instance roles), the
-region from `AWS_REGION`, and S3-compatible endpoints (MinIO, R2, …) from `AWS_ENDPOINT_URL_S3`.
+Credentials come from the standard AWS chain (environment, shared config, SSO, instance roles), and
+S3-compatible endpoints (MinIO, R2, …) from `AWS_ENDPOINT_URL_S3`. The bucket's region is discovered
+from the bucket itself, so it does not need to match your configured region — no `AWS_REGION`
+required.
 
 Each command acquires a lock object (`<key>.lock`) before touching the database — created atomically
 with a conditional write, so two clients cannot both win — then downloads the database, works on the

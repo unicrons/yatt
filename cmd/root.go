@@ -63,7 +63,7 @@ func (o *globalOptions) renderOptions() []render.Option {
 func (o *globalOptions) openStore(cmd *cobra.Command) (store.Store, error) {
 	path := o.db
 	if remote.IsRemote(path) {
-		client, err := newRemoteClient(cmd.Context())
+		client, err := newRemoteClient(cmd.Context(), path)
 		if err != nil {
 			return nil, err
 		}

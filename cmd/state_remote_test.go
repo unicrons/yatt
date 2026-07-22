@@ -27,7 +27,7 @@ func withFakeRemote(t *testing.T) *remotetest.Fake {
 
 	fake := remotetest.NewFake()
 	original := newRemoteClient
-	newRemoteClient = func(context.Context) (remote.Client, error) { return fake, nil }
+	newRemoteClient = func(context.Context, string) (remote.Client, error) { return fake, nil }
 	t.Cleanup(func() { newRemoteClient = original })
 	return fake
 }

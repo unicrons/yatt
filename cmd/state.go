@@ -52,7 +52,7 @@ func newStateUnlockCmd(global *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client, err := newRemoteClient(cmd.Context())
+			client, err := newRemoteClient(cmd.Context(), url)
 			if err != nil {
 				return err
 			}
@@ -121,7 +121,7 @@ func newStatePushCmd(global *globalOptions) *cobra.Command {
 			} else if localPath, err = store.DefaultPath(); err != nil {
 				return fmt.Errorf("cannot determine the default database location, name one explicitly: %w", err)
 			}
-			client, err := newRemoteClient(cmd.Context())
+			client, err := newRemoteClient(cmd.Context(), url)
 			if err != nil {
 				return err
 			}
@@ -153,7 +153,7 @@ func newStatePullCmd(global *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client, err := newRemoteClient(cmd.Context())
+			client, err := newRemoteClient(cmd.Context(), url)
 			if err != nil {
 				return err
 			}
