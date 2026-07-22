@@ -7,14 +7,20 @@ Unlike the stateless tools it takes its algorithms from, `yatt` remembers: scan 
 diffs, and persistent triage state are the point. Re-scanning a seed tells you what *changed*, and a
 verdict you record once is never asked of you again.
 
-## Status
+![yatt scan demo](docs/img/scan.gif)
 
-Ten permutation techniques (omission, transposition, keyboard adjacency, addition, hyphenation,
-vowel swap, bitsquatting, dot insertion, TLD swap, homoglyph), concurrent resolution under a QPS
-ceiling, per-zone wildcard detection, and table/JSON/NDJSON output.
-Scans persist to SQLite — a local file by default, or one kept in S3 and shared across machines —
-with cross-scan diff (`new`/`changed`/`unchanged`/`gone`) and persistent triage state. Scan
-profiles, a config file, and enrichment links round out the first slice.
+## Features
+
+- Ten permutation techniques: omission, transposition, keyboard adjacency, addition, hyphenation,
+  vowel swap, bitsquatting, dot insertion, TLD swap, homoglyph.
+- Registration read from the NS rcode at the registrable domain, so parked, MX-only and
+  delegation-only registrations are not missed.
+- Per-zone wildcard (catch-all) detection, including registries that never answer NXDOMAIN.
+- Concurrent resolution under a QPS ceiling.
+- Scan history with cross-scan diff: `new`/`changed`/`unchanged`/`gone`.
+- Persistent triage verdicts that survive every future scan.
+- State in SQLite — a local file by default, or kept in S3 and shared across machines.
+- Scan profiles, a config file, table/JSON/NDJSON output, and AbuseIPDB/Shodan enrichment links.
 
 ## Quickstart
 
@@ -38,35 +44,23 @@ yatt history <domain>               list the recorded scans of a seed
 yatt diff <domain>                  compare the last two scans, without resolving
 yatt triage <domain> <candidate>    record a verdict on a candidate
 yatt triage list <domain>           list the verdicts recorded for a seed
-yatt state push [local-db]          upload a local database to the remote location
-yatt state pull <local-path>        download the remote database to a local file
-yatt state unlock                   clear the lock a crashed process left behind
+yatt state push|pull|unlock         manage a database kept in S3
 
-Global flags:
-  -o, --output string     output format: table|json|ndjson (default "table")
-      --resolver string   upstream DNS resolver as host[:port] (default: the system resolver)
-      --timeout duration  per-query DNS timeout (default 3s)
-      --db string         scan database path, or s3://bucket/key to keep it in S3
-                          (default: yatt/yatt.db under the user config dir)
-      --concurrency int   how many candidates to resolve at once (default 20)
-      --qps float         cap DNS queries per second across all workers (0 for unlimited)
-      --config string     config file (YAML/JSON/TOML) defining scan profiles (default: none)
-      --punycode          show IDN candidates in their punycode (xn--) form instead of Unicode
-  -v, --verbose           log scan progress to stderr
-
-scan flags:
-      --show-unregistered       also report candidates nobody has registered
-      --technique strings       techniques to run: omission, transposition, keyboard, addition,
-                                hyphenation, vowel-swap, bitsquatting, dot-insertion, tld,
-                                homoglyph (default: all)
-      --tld-profile string      TLD list the tld technique swaps against: common|full (default "common")
-      --tld-file string         custom TLD list, one per line; overrides --tld-profile
-      --limit int               cap the total candidate count after per-technique capping (0 for unlimited)
+Main flags:
+  -o, --output string           output format: table|json|ndjson (default "table")
+      --db string               scan database path, or s3://bucket/key to keep it in S3
+      --resolver string         upstream DNS resolver as host[:port] (default: the system resolver)
+      --qps float               cap DNS queries per second across all workers (0 for unlimited)
       --profile string          scan profile: quick|full, or one defined in --config
-      --wide                    add the enrichment-link column to the table
+      --technique strings       techniques to run (default: all ten)
+      --show-unregistered       also report candidates nobody has registered
       --status strings          report only candidates with these triage statuses
       --exclude-status strings  report every candidate except those with these statuses
 ```
+
+The full command and flag reference is in [docs/cli.md](docs/cli.md).
+
+## Examples
 
 ```sh
 yatt scan example.com
@@ -74,285 +68,24 @@ yatt scan example.com --show-unregistered
 yatt scan example.com --technique omission,homoglyph --limit 50
 yatt scan example.com --output json | jq '.[] | select(.has_mx)'
 yatt scan example.com --resolver 1.1.1.1 --timeout 5s
-```
-
-Machine-readable output goes to stdout and progress goes to stderr, so piping to `jq` stays clean
-even with `--verbose`.
-
-While a scan runs in a terminal, a live progress line on stderr tracks completions, the registered
-count so far, an ETA and the resolution speed. It only appears when stderr is a terminal — piping or
-redirecting stderr (CI, cron, `2>/dev/null`) suppresses it automatically, no flag needed.
-
-The table renders IDN candidates in their Unicode form — a homoglyph like `аpple.com` is shown as
-the deception it is, not as `xn--pple-43d.com`. Pass `--punycode` to see the wire form instead. JSON
-and NDJSON always keep the stable punycode form in `candidate` (it is the store and triage key) and
-add a `unicode` field on the rows where the two differ.
-
-## Permutation techniques
-
-Ten techniques run by default. Each models a specific way a real visitor ends up somewhere other than
-the domain they meant, which is also why they are worth running together: a squatter picks the
-mechanism, not the tool.
-
-| Technique | What it does | `example.com` becomes |
-| --- | --- | --- |
-| `omission` | drops one character | `exmple.com` |
-| `transposition` | swaps two adjacent characters | `exapmle.com` |
-| `keyboard` | replaces a character with a physical neighbour on qwerty, qwertz or azerty | `ezample.com` |
-| `addition` | appends one character — the trailing fat-finger, and the pluralised name | `examples.com` |
-| `hyphenation` | inserts a hyphen — the word-split spelling of a compound name | `exam-ple.com` |
-| `vowel-swap` | replaces one vowel with another — a mis-hit vowel, or a near-homophone | `exemple.com` |
-| `bitsquatting` | flips a single bit in one character | `dxample.com` |
-| `dot-insertion` | inserts a dot inside the label | `ex.ample.com` |
-| `tld` | swaps the suffix for another one | `example.co` |
-| `homoglyph` | substitutes a look-alike character or pair | `examp1e.com` |
-
-Two of them are not typos at all, and are easy to misread in a report:
-
-- **`bitsquatting`** models a *memory error*, not a keystroke. A bit flips in a cached hostname —
-  through faulty RAM, or a cosmic ray — and a request meant for `example.com` leaves for
-  `dxample.com` with nobody having typed anything. Registering the flip neighbours of a popular
-  domain is a real, documented squatter pattern, which is why these candidates are worth resolving
-  even though no human would ever type one.
-- **`dot-insertion`** is the only technique that moves the **registrable boundary** rather than
-  editing a label. The candidate `ex.ample.com` is not a variant of `example.com` at all: the name a
-  squatter actually registers is `ample.com`, served with `ex` as a subdomain so the address bar
-  reads almost right. Registration and wildcard checks therefore target `ample.com`, and that is the
-  name a triage verdict is filed against.
-
-`homoglyph` and `tld` are the two fan-out-heavy ones. `homoglyph` substitutes twice — once over the
-seed's label and again over everything that produced — so a compounded look-alike (a digit
-substitution *and* a script substitution) is reachable. `tld` sweeps whatever `--tld-profile` or
-`--tld-file` selects, and is deliberately exempt from the per-technique cap: its size is exactly the
-list you chose, so capping it would quietly turn `--tld-profile full` into "the IANA list up to
-roughly the letter g".
-
-```sh
-yatt scan example.com --technique bitsquatting,dot-insertion
-yatt scan example.com --technique tld --tld-profile full
-```
-
-## Registered candidates only, registered candidates first
-
-A scan reports only the candidates somebody has actually registered, and lists them ahead of
-everything else. A `--tld-profile full` run generates several hundred names, nearly all of which have
-never existed; the handful that someone took is the entire finding.
-
-```sh
-yatt scan example.com                       # only what is registered
-yatt scan example.com --show-unregistered   # everything, registered first
-```
-
-Two kinds of row survive the default regardless:
-
-- **The seed's own row**, on the same reasoning that exempts it from `--status`: it is the baseline
-  the candidates are read against.
-- **Any candidate whose lookup failed.** Nothing answered, which is not the same as the domain being
-  free — dropping those would turn a partially-failed scan into a confidently short one. The failure
-  is reported in the row's `error` field.
-
-Ordering is a property of the report only. The sort is stable and the seed stays pinned to the first
-row, so candidates keep the permutation engine's nearest-first order within each group and two scans
-over identical answers still render identically — which is what the diff feature rests on. Nothing
-here changes what was resolved or recorded: `--show-unregistered` re-reads the same stored scan.
-
-Run with `--verbose` to see how many rows the default hid.
-
-## The seed is the first row
-
-Every report leads with the seed domain itself, marked with the technique `original`. It is resolved
-exactly like a candidate — same NS-Rcode registration check, same A and MX presence — so a look-alike
-that shares the real domain's nameservers or mail setup is obvious at a glance instead of needing a
-second lookup.
-
-It is recorded and diffed like a candidate too, so a change to the real domain's own NS or MX is
-surfaced by the next scan. It is *not* counted as a candidate in `yatt history`, it is never hidden
-by `--status`/`--exclude-status` or by the registered-only default even when the seed itself does not
-resolve, and it carries no triage status of its own unless you record one:
-`new` means "nobody has judged this yet", which is a statement about a backlog the protected domain
-does not belong in.
-
-## State: history, diff, and triage
-
-Every scan is recorded, so the second scan of a seed reports each candidate as `new`, `changed`,
-`unchanged` or `gone` against the previous one. "Changed" is defined over the boolean signals —
-registered, NS, MX, A, wildcard — so a CDN rotating its addresses is not a change, but a candidate
-becoming registered, gaining MX, or leaving a catch-all zone for real infrastructure is.
-
-Triage state is the other half. A verdict is keyed by seed and candidate rather than by scan, so it
-survives every future run:
-
-```sh
-yatt triage example.com xample.com --status owned --note "defensive registration"
-yatt triage example.com evil-example.com --status malicious
-
-yatt scan example.com --exclude-status owned      # hide what we registered ourselves
-yatt scan example.com --status new                # only the untriaged backlog
-yatt scan example.com --status malicious,suspicious
-```
-
-Valid statuses are `new`, `benign`, `suspicious`, `malicious`, `watchlist`, `ignored`,
-`false_positive` and `owned`. `new` is the implicit state of a candidate nobody has judged — it is
-never stored, and nothing can be set back to it.
-
-Filtering applies to the report only. Every candidate is still resolved and recorded, so a filtered
-scan does not leave gaps in the seed's history or make the next diff report phantom changes.
-
-Recording a verdict is not a DNS signal, so it never makes a candidate report as `changed`.
-
-A verdict is only readable through the seed it is filed under, so `yatt triage` refuses a candidate
-that has never appeared in a recorded scan of that seed — otherwise the wrong seed stores happily and
-the verdict is invisible forever. When another seed does have the candidate, the error names it:
-
-```
-$ yatt triage example.com nicrons.cloud --status owned
-error: nicrons.cloud has never appeared in a scan of example.com, but it is recorded under
-unicrons.cloud: did you mean `yatt triage unicrons.cloud nicrons.cloud`? (pass --force to record it
-under example.com anyway)
-```
-
-The check reads recorded scans rather than re-deriving the permutation set, so a candidate an earlier
-run produced still counts even if today's technique flags would not emit it. `--force` records the
-verdict regardless — use it to pre-record a judgement before the seed's first scan, or to judge a
-candidate the techniques in use did not produce. Such a verdict is stored, but stays invisible until
-some scan surfaces the candidate.
-
-### Remote state in S3
-
-The database can live in S3 instead of on local disk, so several machines — a laptop and a cron box,
-say — share one history and one set of verdicts. Point `--db` at an object URL and every command
-works unchanged:
-
-```sh
-yatt state push --db s3://my-bucket/yatt/yatt.db     # one-time migration of the local database
-yatt scan example.com --db s3://my-bucket/yatt/yatt.db
-```
-
-Credentials come from the standard AWS chain (environment, shared config, SSO, instance roles), and
-S3-compatible endpoints (MinIO, R2, …) from `AWS_ENDPOINT_URL_S3`. The bucket's region is discovered
-from the bucket itself, so it does not need to match your configured region — no `AWS_REGION`
-required.
-
-Each command acquires a lock object (`<key>.lock`) before touching the database — created atomically
-with a conditional write, so two clients cannot both win — then downloads the database, works on the
-local copy, uploads it back if it changed, and releases the lock. Reads lock too: a second command
-starting while one is running aborts immediately, naming the holder:
-
-```
-error: remote state is locked: held by laptop.local (pid 4242) since 2026-07-21T14:03:11Z, yatt
-devel, operation "scan" — if that process is gone, run: yatt state unlock --db s3://…
-```
-
-A process that dies mid-command leaves that lock behind; `yatt state unlock` shows the holder and
-clears it after confirmation. Only clear a lock whose process is actually gone — behind a
-force-cleared lock the final upload is still conditional on the object version the run started from,
-so a concurrent writer surfaces as a loud upload error rather than a silent overwrite, but the run
-that loses that race has to be redone.
-
-`state pull` takes a consistent local snapshot (handy for backups); `state push --force` restores
-one, or uploads the copy a failed upload preserved. Don't mix modes: once a database is pushed to
-S3, retire the local file — a machine still scanning against its local copy forks the history the
-remote one exists to share.
-
-## Scan profiles and the config file
-
-`--profile` is a preset for the knobs that shape a scan: `techniques`, `tld_profile`, `concurrency`,
-`qps`, `timeout` and `limit`. Two are built in:
-
-- `quick` — omission, transposition and keyboard adjacency against the common TLD list, at modest
-  concurrency, for a fast first look.
-- `full` — every technique, including the two fan-out-heavy ones (homoglyph, TLD swap against the
-  whole IANA list), at higher concurrency.
-
-```sh
-yatt scan example.com --profile quick
 yatt scan example.com --profile full
 ```
 
-A profile is a preset, not a lock: any flag it sets can still be overridden individually, and the flag
-always wins.
+A verdict recorded once filters every future scan:
 
-```sh
-yatt scan example.com --profile quick --technique homoglyph   # quick's techniques, but this one instead
-yatt scan example.com --profile quick --tld-profile full      # quick's techniques, full's TLD list
-```
+![yatt triage demo](docs/img/triage.gif)
 
-`--config` points at a YAML/JSON/TOML file that can redefine a builtin profile or add new ones under
-`profiles`, naming only the fields it wants to change — anything it leaves out still comes from the
-builtin of the same name, or stays unset for a name with no builtin:
+## Documentation
 
-```yaml
-# yatt.yaml
-profile: quick        # selected when --profile is not given
-
-profiles:
-  quick:
-    tld_profile: full  # quick, but sweeping the full TLD list instead of the curated one
-
-  thorough:             # a profile with no builtin counterpart
-    techniques: [omission, transposition, keyboard, tld]
-    tld_profile: full
-    concurrency: 30
-    timeout: 5s          # a duration string; a bare number is rejected as ambiguous
-    limit: 300
-```
-
-```sh
-yatt --config yatt.yaml scan example.com --profile thorough
-```
-
-Precedence, low to high: the builtin profile < a same-named profile in the config file < the
-`YATT_PROFILE` environment variable < an explicit `--profile` < a flag the command line actually set
-for that one knob. A profile field left unset at every level does not blank a flag's own default —
-scanning with no `--profile` at all behaves exactly as if profiles did not exist.
-
-## Enrichment links
-
-Every finding carries ready-to-open AbuseIPDB and Shodan lookup links: one pair by domain, plus one
-pair per resolved address. Nothing here makes an HTTP call — these are links to open by hand, not API
-calls this tool makes on your behalf, so there is no key to configure and no rate limit to trip.
-
-```sh
-yatt scan example.com --output json | jq '.[0].enrichment'
-```
-
-`--output json`/`--output ndjson` always include the full set, including one pair per resolved
-address. The table leaves the links out by default — two full URLs per row, each derivable from the
-candidate name, would wrap every other column off the terminal — and `--wide` adds an `ENRICH` column
-carrying the by-domain pair:
-
-```sh
-yatt scan example.com --wide
-```
-
-## How "registered" is decided
-
-Registration is read from the **response code of an NS query at the candidate's registrable domain
-(eTLD+1)** — NXDOMAIN means unregistered, NOERROR means registered.
-
-The naive alternative, treating an A-record NXDOMAIN as "unregistered", produces false negatives on
-MX-only and delegation-only domains. Those are precisely the parked and defensive registrations a
-typosquatting scan exists to surface, so A, AAAA, MX and NS presence are reported as separate signals
-rather than as evidence of registration.
-
-The seed is split with a public-suffix list rather than on the last dot, for the same reason: a naive
-split of `example.co.uk` would query `co.uk`, which always answers NOERROR and would mark every
-candidate registered.
-
-### Zones that never say NXDOMAIN
-
-Some registries — `.gov`, `.ph` and `.fm` among them — answer NOERROR for names that do not exist.
-Taken at face value the rcode test reports *every* candidate under them as registered, with zero DNS
-records to show for it.
-
-The wildcard probes already answer this: the first random-label lookup reveals whether the zone lets
-a nonexistent name be nonexistent. When it does not, only the candidates with **no records at all**
-are flipped back to unregistered — a genuinely registered name in such a zone still shows a real
-delegation or real records, so it survives. The reported `rcode` is left as the zone gave it: the
-zone did say NOERROR, it just does not mean registration there.
-
-This is separate from catch-all detection. A zone can suppress NXDOMAIN without handing out
-addresses, which is exactly what these registries do, so neither check subsumes the other.
+| | |
+| --- | --- |
+| [docs/cli.md](docs/cli.md) | every command and flag, output streams, IDN/punycode handling |
+| [docs/techniques.md](docs/techniques.md) | the ten permutation techniques and what each one models |
+| [docs/registration.md](docs/registration.md) | how "registered" is decided; zones that never say NXDOMAIN |
+| [docs/reporting.md](docs/reporting.md) | report ordering, the seed row, enrichment links |
+| [docs/state.md](docs/state.md) | scan history, diff, triage verdicts, and remote state in S3 |
+| [docs/configuration.md](docs/configuration.md) | scan profiles and the config file |
+| [docs/development.md](docs/development.md) | dev commands, package layout, regenerating the demo gifs |
 
 ## Development
 
@@ -362,27 +95,7 @@ devbox run test     # gotestsum -- ./...
 devbox run lint     # golangci-lint run
 ```
 
-## Layout
-
-```text
-cmd/                 Cobra commands
-pkg/engine/          permutation techniques and seed parsing (reusable outside the CLI)
-pkg/engine/data/     keyboard, homoglyph and TLD tables (see PROVENANCE.md)
-internal/resolver/   miekg/dns wrapper; the registered/unregistered signal
-internal/scan/       orchestration: permute -> resolve -> persist -> diff -> triage -> report
-internal/wildcard/   per-zone catch-all detection
-internal/store/      database/sql repository over SQLite; goose migrations (embed.FS)
-internal/store/remote/  S3 transport for the store: lock object, download, upload-on-close
-internal/triage/     triage status vocabulary and transition rules
-internal/config/     scan profiles, config-file loading, and the precedence chain
-internal/enrich/     AbuseIPDB / Shodan link builders (no HTTP calls)
-internal/render/     table / JSON / NDJSON renderers and the live progress line
-```
-
-The `store` package is an interface over `database/sql` and the SQL stays inside the portable subset
-(column-list `ON CONFLICT`, `RETURNING`, `1`/`0` booleans, ISO-8601 TEXT timestamps), with migrations
-in one directory per engine. Triage history is the data that has to survive an eventual Postgres
-cutover, so nothing is allowed to depend on SQLite specifics.
+More in [docs/development.md](docs/development.md).
 
 ## Credits
 
