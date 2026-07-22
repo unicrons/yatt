@@ -28,6 +28,14 @@ type LockInfo struct {
 	Operation string    `json:"operation"`
 }
 
+// Describe renders the holder for humans. The lock-held abort and `yatt state
+// unlock` both show it, so the two descriptions can never drift apart.
+func (i LockInfo) Describe() string {
+	return fmt.Sprintf("held by %s (pid %d) since %s, yatt %s, operation %q",
+		i.Hostname, i.PID, i.CreatedAt.UTC().Format(time.RFC3339),
+		i.Version, i.Operation)
+}
+
 // ErrNoLock reports that no lock object exists where one was asked about.
 var ErrNoLock = errors.New("no lock is held")
 
@@ -46,9 +54,8 @@ func (e *ErrLockHeld) Error() string {
 	if e.ReadErr != nil {
 		return fmt.Sprintf("remote state is locked and the holder metadata is unreadable (%v) — if no other yatt is running, run: yatt state unlock --db %s", e.ReadErr, e.URL)
 	}
-	return fmt.Sprintf("remote state is locked: held by %s (pid %d) since %s, yatt %s, operation %q — if that process is gone, run: yatt state unlock --db %s",
-		e.Info.Hostname, e.Info.PID, e.Info.CreatedAt.UTC().Format(time.RFC3339),
-		e.Info.Version, e.Info.Operation, e.URL)
+	return fmt.Sprintf("remote state is locked: %s — if that process is gone, run: yatt state unlock --db %s",
+		e.Info.Describe(), e.URL)
 }
 
 // lockKey derives the lock object's key from the database object's key. Being
@@ -89,10 +96,20 @@ func acquireLock(ctx context.Context, c Client, bucket, key, rawURL, op string) 
 		}
 
 		info, readErr := readLock(ctx, c, bucket, key)
-		if errors.Is(readErr, ErrNoLock) && attempt == 0 {
-			continue
+		if errors.Is(readErr, ErrNoLock) {
+			if attempt == 0 {
+				continue
+			}
+			// Twice in a row the conditional put lost to a lock that was gone
+			// again by the time it was read: the lock is cycling between other
+			// short commands. That is contention, not a stale lock — steering
+			// the user to force-unlock here would have them clear a live one.
+			return fmt.Errorf("the remote database is busy (its lock keeps changing hands): retry in a moment")
 		}
-		return &ErrLockHeld{Info: info, URL: rawURL, ReadErr: readErr}
+		if readErr != nil {
+			return &ErrLockHeld{URL: rawURL, ReadErr: readErr}
+		}
+		return &ErrLockHeld{Info: info, URL: rawURL}
 	}
 }
 

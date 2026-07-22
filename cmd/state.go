@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -67,9 +66,7 @@ func newStateUnlockCmd(global *globalOptions) *cobra.Command {
 				return err
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "lock held by %s (pid %d) since %s, yatt %s, operation %q\n",
-				info.Hostname, info.PID, info.CreatedAt.UTC().Format(time.RFC3339),
-				info.Version, info.Operation)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "lock %s\n", info.Describe())
 			if !force {
 				ok, err := confirm(cmd, "Clear this lock? Only do this if that process is gone.")
 				if err != nil {
@@ -81,7 +78,10 @@ func newStateUnlockCmd(global *globalOptions) *cobra.Command {
 				}
 			}
 
-			if _, err := remote.Unlock(cmd.Context(), client, url); err != nil {
+			// The lock shown above is the one Unlock clears: it refuses if the
+			// lock changed hands while the user deliberated, so a live holder
+			// that replaced the stale one cannot be cleared unseen.
+			if err := remote.Unlock(cmd.Context(), client, url, info); err != nil {
 				// The holder finishing on its own between the prompt and the
 				// delete is the desired end state, not a failure.
 				if errors.Is(err, remote.ErrNoLock) {

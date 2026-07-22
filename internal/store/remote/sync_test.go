@@ -3,6 +3,7 @@ package remote_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,38 @@ func TestPullRefusesAnExistingLocalWithoutForce(t *testing.T) {
 	got, _ = os.ReadFile(dest)
 	if !bytes.Equal(got, []byte("remote bytes")) {
 		t.Errorf("forced Pull did not overwrite the local file")
+	}
+}
+
+func TestPullFailureLeavesTheExistingCopyIntact(t *testing.T) {
+	fake := remotetest.NewFake()
+	ctx := context.Background()
+
+	if err := remote.Push(ctx, fake, writeLocalDB(t, "remote bytes"), dbURL, false); err != nil {
+		t.Fatalf("seeding Push: %v", err)
+	}
+	dest := writeLocalDB(t, "previous good backup")
+
+	// The connection drops halfway through the download: the previous copy
+	// must survive, and no half-written file may take its place.
+	fake.FailGetBody[dbKey] = errors.New("connection reset")
+	if err := remote.Pull(ctx, fake, dbURL, dest, true); err == nil {
+		t.Fatal("Pull succeeded despite the download failing mid-stream")
+	}
+
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, []byte("previous good backup")) {
+		t.Errorf("interrupted Pull --force destroyed the existing copy: %q", got)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(dest), ".yatt-pull-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Errorf("interrupted Pull left partial files behind: %v", leftovers)
 	}
 }
 

@@ -183,10 +183,92 @@ func TestConcurrentReplacementIsDetectedAtUpload(t *testing.T) {
 	}
 }
 
+func TestReadOnlyFirstUseCreatesNoRemoteObject(t *testing.T) {
+	fake := remotetest.NewFake()
+	ctx := context.Background()
+
+	// A read against a key with no database — first use, or a typo'd --db —
+	// must not manufacture remote state out of the schema migrations.
+	s, err := remote.Open(ctx, fake, dbURL, "history")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.ListScans(ctx, "example.com"); err != nil {
+		t.Fatalf("ListScans: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, ok := fake.Objects[dbKey]; ok {
+		t.Errorf("a read-only command against a missing key created a database object")
+	}
+	if _, ok := fake.Objects[lockKey]; ok {
+		t.Errorf("lock object still present after Close")
+	}
+}
+
+func TestAMissingETagDoesNotFailTheUpload(t *testing.T) {
+	fake := remotetest.NewFake()
+	ctx := context.Background()
+
+	s, err := remote.Open(ctx, fake, dbURL, "scan")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.RecordScan(ctx, "example.com", "", []store.Finding{finding("xample.com")}); err != nil {
+		t.Fatalf("RecordScan: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// The endpoint stops serving ETags — some S3-compatible gateways do.
+	// The object still exists, so the upload must not take the first-use
+	// IfNoneMatch branch and fail every subsequent write.
+	obj := fake.Objects[dbKey]
+	obj.ETag = ""
+	fake.Objects[dbKey] = obj
+
+	s2, err := remote.Open(ctx, fake, dbURL, "scan")
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	if _, err := s2.RecordScan(ctx, "example.com", "", []store.Finding{finding("xampl.com")}); err != nil {
+		t.Fatalf("RecordScan: %v", err)
+	}
+	if err := s2.Close(); err != nil {
+		t.Fatalf("Close without an ETag: %v", err)
+	}
+}
+
 func TestOpenRejectsBadURLs(t *testing.T) {
 	for _, raw := range []string{"s3://", "s3://bucket", "s3://bucket/", "s3:///key"} {
 		if _, err := remote.Open(context.Background(), remotetest.NewFake(), raw, "scan"); err == nil {
 			t.Errorf("Open(%q) succeeded, want error", raw)
 		}
+	}
+}
+
+func TestTheSchemeIsCaseInsensitive(t *testing.T) {
+	// RFC 3986 schemes are case-insensitive, and the stakes here are silent:
+	// "S3://" mistaken for a local path would create a fresh local database
+	// and fork the shared history without a word.
+	for _, raw := range []string{"S3://bucket/state/yatt.db", "s3://bucket/state/yatt.db"} {
+		if !remote.IsRemote(raw) {
+			t.Errorf("IsRemote(%q) = false, want true", raw)
+		}
+	}
+
+	fake := remotetest.NewFake()
+	s, err := remote.Open(context.Background(), fake, "S3://bucket/state/yatt.db", "scan")
+	if err != nil {
+		t.Fatalf("Open with an uppercase scheme: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, ok := fake.Objects[lockKey]; ok {
+		t.Errorf("lock not released under the uppercase scheme")
 	}
 }

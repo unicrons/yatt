@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/smithy-go"
+
 	"github.com/andoniaf/yatt/internal/store/remote"
 	"github.com/andoniaf/yatt/internal/store/remote/remotetest"
 )
@@ -85,18 +87,71 @@ func TestUnlockClearsTheLock(t *testing.T) {
 	// process whose lock Unlock exists to clear.
 	t.Cleanup(func() { _ = s.Close() })
 
-	info, err := remote.Unlock(ctx, fake, dbURL)
+	info, err := remote.ReadLock(ctx, fake, dbURL)
 	if err != nil {
-		t.Fatalf("Unlock: %v", err)
+		t.Fatalf("ReadLock: %v", err)
 	}
-	if info.Operation != "scan" {
-		t.Errorf("Unlock cleared %+v, want the scan lock", info)
+	if err := remote.Unlock(ctx, fake, dbURL, info); err != nil {
+		t.Fatalf("Unlock: %v", err)
 	}
 	if _, ok := fake.Objects[lockKey]; ok {
 		t.Errorf("lock object still present after Unlock")
 	}
 
-	if _, err := remote.Unlock(ctx, fake, dbURL); !errors.Is(err, remote.ErrNoLock) {
+	if err := remote.Unlock(ctx, fake, dbURL, info); !errors.Is(err, remote.ErrNoLock) {
 		t.Errorf("second Unlock = %v, want ErrNoLock", err)
+	}
+}
+
+func TestAcquireReportsBusyWhenTheLockCycles(t *testing.T) {
+	fake := remotetest.NewFake()
+	// Every conditional put loses, yet no lock is ever there to read
+	// afterwards — the shape of a lock cycling between short-lived commands.
+	fake.FailPut[lockKey] = &smithy.GenericAPIError{Code: "PreconditionFailed"}
+
+	_, err := remote.Open(context.Background(), fake, dbURL, "scan")
+	if err == nil {
+		t.Fatal("Open acquired a lock that always conflicts")
+	}
+	if !strings.Contains(err.Error(), "busy") {
+		t.Errorf("cycling-lock error = %v, want a busy/retry message", err)
+	}
+	// A cycling lock is contention, not staleness: steering the user to
+	// force-unlock here would have them clear a live process's lock.
+	if strings.Contains(err.Error(), "state unlock") {
+		t.Errorf("cycling-lock error steers to force-unlock: %v", err)
+	}
+}
+
+func TestUnlockRefusesALockThatChangedHands(t *testing.T) {
+	fake := remotetest.NewFake()
+	ctx := context.Background()
+
+	s, err := remote.Open(ctx, fake, dbURL, "scan")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	stale, err := remote.ReadLock(ctx, fake, dbURL)
+	if err != nil {
+		t.Fatalf("ReadLock: %v", err)
+	}
+
+	// While the operator deliberates, the holder finishes and a new live
+	// process takes the lock.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s2, err := remote.Open(ctx, fake, dbURL, "triage")
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+
+	err = remote.Unlock(ctx, fake, dbURL, stale)
+	if err == nil || !strings.Contains(err.Error(), "changed hands") {
+		t.Fatalf("Unlock with a superseded snapshot = %v, want a changed-hands refusal", err)
+	}
+	if _, ok := fake.Objects[lockKey]; !ok {
+		t.Errorf("the live holder's lock was cleared anyway")
 	}
 }

@@ -35,6 +35,10 @@ type Fake struct {
 	// FailPut scripts an error for PutObject on a key, standing in for a
 	// network or service failure at upload time.
 	FailPut map[string]error
+	// FailGetBody scripts a mid-stream failure: GetObject on the key succeeds
+	// but its Body errors after yielding half the object, standing in for a
+	// connection dropped during a download.
+	FailGetBody map[string]error
 	// PutCount records how many PutObject calls each key received (counting
 	// scripted failures), so a test can assert that a read-only command never
 	// uploaded.
@@ -45,9 +49,10 @@ type Fake struct {
 // NewFake returns an empty fake.
 func NewFake() *Fake {
 	return &Fake{
-		Objects:  make(map[string]Object),
-		FailPut:  make(map[string]error),
-		PutCount: make(map[string]int),
+		Objects:     make(map[string]Object),
+		FailPut:     make(map[string]error),
+		FailGetBody: make(map[string]error),
+		PutCount:    make(map[string]int),
 	}
 }
 
@@ -60,28 +65,26 @@ func (f *Fake) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...func(*s3
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	obj, ok := f.Objects[objectKey(in.Bucket, in.Key)]
+	key := objectKey(in.Bucket, in.Key)
+	obj, ok := f.Objects[key]
 	if !ok {
 		return nil, &types.NoSuchKey{}
 	}
+	body := io.Reader(bytes.NewReader(obj.Body))
+	if err, scripted := f.FailGetBody[key]; scripted {
+		body = io.MultiReader(bytes.NewReader(obj.Body[:len(obj.Body)/2]), failingReader{err})
+	}
 	return &s3.GetObjectOutput{
-		Body: io.NopCloser(bytes.NewReader(obj.Body)),
+		Body: io.NopCloser(body),
 		ETag: aws.String(obj.ETag),
 	}, nil
 }
 
-// HeadObject implements remote.Client. Note the real service reports a missing
-// key here as NotFound, not NoSuchKey.
-func (f *Fake) HeadObject(_ context.Context, in *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+// failingReader errors on the first read, ending a scripted half-delivered
+// body the way a dropped connection would.
+type failingReader struct{ err error }
 
-	obj, ok := f.Objects[objectKey(in.Bucket, in.Key)]
-	if !ok {
-		return nil, &types.NotFound{}
-	}
-	return &s3.HeadObjectOutput{ETag: aws.String(obj.ETag)}, nil
-}
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
 
 // PutObject implements remote.Client, including If-None-Match and If-Match
 // conditional-write rejection.

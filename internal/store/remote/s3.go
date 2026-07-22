@@ -25,22 +25,25 @@ type Client interface {
 	GetObject(ctx context.Context, in *s3.GetObjectInput, opts ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	PutObject(ctx context.Context, in *s3.PutObjectInput, opts ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 	DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, opts ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
-	HeadObject(ctx context.Context, in *s3.HeadObjectInput, opts ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 }
 
 const scheme = "s3://"
 
 // IsRemote reports whether a --db value names an S3 object rather than a local
-// file.
-func IsRemote(path string) bool { return strings.HasPrefix(path, scheme) }
+// file. The scheme comparison is case-insensitive (RFC 3986 schemes are), and
+// it has to be: "S3://bucket/key" mistaken for a local path would not error —
+// it would create a fresh local database and silently fork the history the
+// remote one exists to share.
+func IsRemote(path string) bool {
+	return len(path) >= len(scheme) && strings.EqualFold(path[:len(scheme)], scheme)
+}
 
 // parseURL splits s3://bucket/key/parts into bucket and key.
 func parseURL(raw string) (bucket, key string, err error) {
-	rest, ok := strings.CutPrefix(raw, scheme)
-	if !ok {
+	if !IsRemote(raw) {
 		return "", "", fmt.Errorf("not an s3:// URL: %q", raw)
 	}
-	bucket, key, ok = strings.Cut(rest, "/")
+	bucket, key, ok := strings.Cut(raw[len(scheme):], "/")
 	if !ok || bucket == "" || key == "" {
 		return "", "", fmt.Errorf("invalid S3 database URL %q: want s3://bucket/key", raw)
 	}
