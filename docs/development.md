@@ -31,4 +31,11 @@ cutover, so nothing is allowed to depend on SQLite specifics.
 ## Demo gifs
 
 The gifs in the README are recorded with [vhs](https://github.com/charmbracelet/vhs) from the tapes
-in `docs/vhs/` — after building `./yatt`, regenerate one with `vhs docs/vhs/scan.tape`.
+in `docs/vhs/`. The tapes run the locally built binary, so build it explicitly first —
+`devbox run build` compiles the packages but leaves no `./yatt` behind:
+
+```sh
+go build -o yatt .
+vhs docs/vhs/scan.tape
+vhs docs/vhs/triage.tape
+```

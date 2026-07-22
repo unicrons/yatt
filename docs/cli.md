@@ -36,6 +36,18 @@ scan flags:
       --wide                    add the enrichment-link column to the table
       --status strings          report only candidates with these triage statuses
       --exclude-status strings  report every candidate except those with these statuses
+
+triage flags:
+      --status string   verdict to record: benign|suspicious|malicious|watchlist|ignored|
+                        false_positive|owned
+      --note string     free-text note recorded alongside the verdict
+      --force           record the verdict even if the candidate has never appeared in a
+                        scan of this seed
+
+state flags:
+      --force           push: replace the remote database if one already exists
+                        pull: overwrite the local file if it already exists
+                        unlock: clear the lock without asking for confirmation
 ```
 
 ## Output streams

@@ -11,8 +11,8 @@ verdict you record once is never asked of you again.
 
 ## Features
 
-- Ten permutation techniques: omission, transposition, keyboard adjacency, addition, hyphenation,
-  vowel swap, bitsquatting, dot insertion, TLD swap, homoglyph.
+- A permutation technique for every squatting mechanism — typos, keyboard slips, homoglyphs,
+  bitsquatting, dot insertion, TLD swaps ([docs/techniques.md](docs/techniques.md) has the full list).
 - Registration read from the NS rcode at the registrable domain, so parked, MX-only and
   delegation-only registrations are not missed.
 - Per-zone wildcard (catch-all) detection, including registries that never answer NXDOMAIN.
@@ -46,13 +46,15 @@ yatt triage <domain> <candidate>    record a verdict on a candidate
 yatt triage list <domain>           list the verdicts recorded for a seed
 yatt state push|pull|unlock         manage a database kept in S3
 
-Main flags:
-  -o, --output string           output format: table|json|ndjson (default "table")
-      --db string               scan database path, or s3://bucket/key to keep it in S3
-      --resolver string         upstream DNS resolver as host[:port] (default: the system resolver)
-      --qps float               cap DNS queries per second across all workers (0 for unlimited)
+Main global flags:
+  -o, --output string     output format: table|json|ndjson (default "table")
+      --db string         scan database path, or s3://bucket/key to keep it in S3
+      --resolver string   upstream DNS resolver as host[:port] (default: the system resolver)
+      --qps float         cap DNS queries per second across all workers (0 for unlimited)
+
+Main scan flags:
       --profile string          scan profile: quick|full, or one defined in --config
-      --technique strings       techniques to run (default: all ten)
+      --technique strings       techniques to run (default: all)
       --show-unregistered       also report candidates nobody has registered
       --status strings          report only candidates with these triage statuses
       --exclude-status strings  report every candidate except those with these statuses
@@ -77,7 +79,7 @@ A verdict recorded once filters every future scan:
 
 ## Documentation
 
-| | |
+| Doc | Covers |
 | --- | --- |
 | [docs/cli.md](docs/cli.md) | every command and flag, output streams, IDN/punycode handling |
 | [docs/techniques.md](docs/techniques.md) | the ten permutation techniques and what each one models |
@@ -89,13 +91,8 @@ A verdict recorded once filters every future scan:
 
 ## Development
 
-```sh
-devbox run build    # go build ./...
-devbox run test     # gotestsum -- ./...
-devbox run lint     # golangci-lint run
-```
-
-More in [docs/development.md](docs/development.md).
+See [docs/development.md](docs/development.md): the devbox scripts (`build`, `test`, `lint`), the
+package layout, and how the demo gifs regenerate.
 
 ## Credits
 
