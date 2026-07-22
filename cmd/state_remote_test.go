@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +77,25 @@ func TestCommandsAbortWhenTheRemoteIsLocked(t *testing.T) {
 	for _, want := range []string{"locked", `operation "scan"`, "yatt state unlock"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("lock abort error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestScanSurfacesAFailedUpload(t *testing.T) {
+	fake := withFakeRemote(t)
+	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
+
+	// The upload inside Close is the run's write path: its failure must fail
+	// the command and carry the recovery instructions, not vanish into a
+	// discarded deferred error.
+	fake.FailPut[remoteDBKey] = errors.New("scripted upload failure")
+	_, _, err := run(t, "scan", "example.com", "--db", remoteDBURL)
+	if err == nil {
+		t.Fatal("scan exited clean although its upload failed")
+	}
+	for _, want := range []string{"scripted upload failure", "state push", "--force"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("upload-failure error missing %q: %v", want, err)
 		}
 	}
 }

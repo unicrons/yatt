@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -203,7 +204,7 @@ func applyProfile(cmd *cobra.Command, global *globalOptions, opts *scanOptions, 
 	}
 }
 
-func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed string) error {
+func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed string) (retErr error) {
 	renderOpts := global.renderOptions()
 	if opts.wide {
 		renderOpts = append(renderOpts, render.Wide())
@@ -252,7 +253,10 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 	if err != nil {
 		return err
 	}
-	defer func() { _ = scanStore.Close() }()
+	// Close is part of the command's outcome, not cleanup: for a remote
+	// database it performs the upload and lock release, and swallowing its
+	// error would report success for a run whose data never left the machine.
+	defer func() { retErr = errors.Join(retErr, scanStore.Close()) }()
 
 	if global.verbose {
 		// Progress output is best-effort: a failed write to stderr must not

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -22,7 +23,7 @@ func newHistoryCmd(global *globalOptions) *cobra.Command {
 	}
 }
 
-func runHistory(cmd *cobra.Command, global *globalOptions, seed string) error {
+func runHistory(cmd *cobra.Command, global *globalOptions, seed string) (retErr error) {
 	renderer, err := render.New(global.output)
 	if err != nil {
 		return err
@@ -32,7 +33,10 @@ func runHistory(cmd *cobra.Command, global *globalOptions, seed string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = scanStore.Close() }()
+	// Close is part of the command's outcome, not cleanup: for a remote
+	// database it performs the upload and lock release, and swallowing its
+	// error would report success for a run whose data never left the machine.
+	defer func() { retErr = errors.Join(retErr, scanStore.Close()) }()
 
 	seed = store.NormalizeSeed(seed)
 	scans, err := scanStore.ListScans(cmd.Context(), seed)
