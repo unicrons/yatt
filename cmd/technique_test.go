@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // TestScanDefaultsToEveryTechnique guards Phase 5's headline default-scope

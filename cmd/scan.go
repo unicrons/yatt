@@ -10,12 +10,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/andoniaf/yatt/internal/config"
-	"github.com/andoniaf/yatt/internal/render"
-	"github.com/andoniaf/yatt/internal/resolver"
-	"github.com/andoniaf/yatt/internal/scan"
-	"github.com/andoniaf/yatt/internal/triage"
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/internal/config"
+	"github.com/unicrons/yatt/internal/render"
+	"github.com/unicrons/yatt/internal/resolver"
+	"github.com/unicrons/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/triage"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // newResolver is the seam tests replace with a scripted resolver, so the scan

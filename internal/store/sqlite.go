@@ -15,9 +15,9 @@ import (
 	// statically linkable and cross-compiles without a C toolchain.
 	_ "modernc.org/sqlite"
 
-	"github.com/andoniaf/yatt/internal/store/migrations"
-	"github.com/andoniaf/yatt/internal/triage"
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/internal/store/migrations"
+	"github.com/unicrons/yatt/internal/triage"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // timeFormat is the ISO-8601 convention every timestamp column uses. SQLite has

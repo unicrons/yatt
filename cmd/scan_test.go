@@ -12,9 +12,9 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/andoniaf/yatt/internal/resolver"
-	"github.com/andoniaf/yatt/internal/scan"
-	"github.com/andoniaf/yatt/internal/store"
+	"github.com/unicrons/yatt/internal/resolver"
+	"github.com/unicrons/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/store"
 )
 
 // scriptedResolver answers NOERROR with an A record for the names in

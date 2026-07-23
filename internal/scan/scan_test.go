@@ -12,8 +12,8 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/andoniaf/yatt/internal/scan"
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/internal/scan"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // jitteryResolver answers deterministically by name but takes a randomly

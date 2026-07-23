@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // mustParseSeed parses a seed that the test expects to be valid.

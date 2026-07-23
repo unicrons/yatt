@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/andoniaf/yatt/internal/store"
-	"github.com/andoniaf/yatt/internal/store/remote"
+	"github.com/unicrons/yatt/internal/store"
+	"github.com/unicrons/yatt/internal/store/remote"
 )
 
 func newStateCmd(global *globalOptions) *cobra.Command {

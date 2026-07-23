@@ -8,7 +8,7 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/andoniaf/yatt/internal/resolver"
+	"github.com/unicrons/yatt/internal/resolver"
 )
 
 // question keys a scripted response by name and query type.

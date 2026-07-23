@@ -9,5 +9,8 @@ IDEA.md
 # Compiled binary
 /yatt
 
+# GoReleaser build output
+/dist/
+
 # devbox / nix local state
 .devbox/

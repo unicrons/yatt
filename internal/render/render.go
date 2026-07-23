@@ -12,10 +12,10 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/andoniaf/yatt/internal/enrich"
-	"github.com/andoniaf/yatt/internal/scan"
-	"github.com/andoniaf/yatt/internal/store"
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/internal/enrich"
+	"github.com/unicrons/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/store"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // Formats lists every supported --output value.

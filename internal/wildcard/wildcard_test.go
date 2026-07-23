@@ -10,7 +10,7 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/andoniaf/yatt/internal/wildcard"
+	"github.com/unicrons/yatt/internal/wildcard"
 )
 
 // catchAllResolver answers every A query under a zone with the same addresses,

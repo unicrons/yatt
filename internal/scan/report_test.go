@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/andoniaf/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/scan"
 )
 
 func reportFindings() []scan.Finding {

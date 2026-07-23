@@ -1,6 +1,6 @@
-module github.com/andoniaf/yatt
+module github.com/unicrons/yatt
 
-go 1.26.4
+go 1.26
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.43.0

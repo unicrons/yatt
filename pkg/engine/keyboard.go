@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/andoniaf/yatt/pkg/engine/data"
+import "github.com/unicrons/yatt/pkg/engine/data"
 
 func init() {
 	Register(Keyboard{})

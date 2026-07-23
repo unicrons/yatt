@@ -7,8 +7,8 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/andoniaf/yatt/internal/scan"
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/internal/scan"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // alwaysNXDOMAIN answers every query NXDOMAIN, so a run over it is fast and

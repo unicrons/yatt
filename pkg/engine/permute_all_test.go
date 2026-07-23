@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // TestPermuteAllTechniquesIsDeterministic guards the property cap.go's

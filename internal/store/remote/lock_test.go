@@ -10,8 +10,8 @@ import (
 
 	"github.com/aws/smithy-go"
 
-	"github.com/andoniaf/yatt/internal/store/remote"
-	"github.com/andoniaf/yatt/internal/store/remote/remotetest"
+	"github.com/unicrons/yatt/internal/store/remote"
+	"github.com/unicrons/yatt/internal/store/remote/remotetest"
 )
 
 func TestSecondOpenAbortsWithTheHolder(t *testing.T) {

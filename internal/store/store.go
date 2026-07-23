@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/andoniaf/yatt/internal/triage"
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/internal/triage"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // Scan is one recorded run against a seed domain.

@@ -3,7 +3,7 @@ package engine_test
 import (
 	"testing"
 
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 func TestParseSeed(t *testing.T) {

@@ -3,7 +3,7 @@ package scan_test
 import (
 	"testing"
 
-	"github.com/andoniaf/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/scan"
 )
 
 // finding builds a finding with just the fields the diff looks at.

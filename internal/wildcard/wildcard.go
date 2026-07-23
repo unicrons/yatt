@@ -24,7 +24,7 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/andoniaf/yatt/internal/resolver"
+	"github.com/unicrons/yatt/internal/resolver"
 )
 
 // DefaultProbes is how many random labels are asked for per zone.

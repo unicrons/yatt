@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andoniaf/yatt/internal/render"
-	"github.com/andoniaf/yatt/internal/scan"
-	"github.com/andoniaf/yatt/internal/store"
-	"github.com/andoniaf/yatt/internal/triage"
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/internal/render"
+	"github.com/unicrons/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/store"
+	"github.com/unicrons/yatt/internal/triage"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 func sampleFindings() []scan.Finding {

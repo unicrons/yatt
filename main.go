@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/andoniaf/yatt/cmd"
+	"github.com/unicrons/yatt/cmd"
 )
 
 func main() {

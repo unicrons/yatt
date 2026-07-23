@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/andoniaf/yatt/internal/render"
-	"github.com/andoniaf/yatt/internal/store"
+	"github.com/unicrons/yatt/internal/render"
+	"github.com/unicrons/yatt/internal/store"
 )
 
 func newHistoryCmd(global *globalOptions) *cobra.Command {

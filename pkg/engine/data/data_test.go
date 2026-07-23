@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andoniaf/yatt/pkg/engine/data"
+	"github.com/unicrons/yatt/pkg/engine/data"
 )
 
 // The tables in this package are regenerated from upstream snapshots, and a

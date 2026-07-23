@@ -9,7 +9,7 @@ package enrich
 import (
 	"net/url"
 
-	"github.com/andoniaf/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/scan"
 )
 
 // Enrichment is one ready-to-open lookup link.

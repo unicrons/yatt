@@ -5,7 +5,7 @@ import (
 
 	"golang.org/x/net/idna"
 
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 func TestToASCII(t *testing.T) {

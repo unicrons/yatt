@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andoniaf/yatt/internal/store"
-	"github.com/andoniaf/yatt/internal/triage"
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/internal/store"
+	"github.com/unicrons/yatt/internal/triage"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // open returns a store backed by a fresh temp-file database. The repository is
