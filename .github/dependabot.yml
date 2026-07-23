@@ -9,6 +9,8 @@ updates:
       github-actions:
         patterns:
           - "*"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "[dep][actions]"
 
@@ -21,5 +23,7 @@ updates:
       go-modules:
         patterns:
           - "*"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "[dep][go]"
