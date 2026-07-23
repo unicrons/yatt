@@ -1,6 +1,6 @@
 package scan
 
-import "github.com/andoniaf/yatt/pkg/engine"
+import "github.com/unicrons/yatt/pkg/engine"
 
 // IsOriginal reports whether this finding is the seed's own row rather than one
 // of its look-alikes.

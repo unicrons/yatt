@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andoniaf/yatt/internal/triage"
+	"github.com/unicrons/yatt/internal/triage"
 )
 
 func TestParse(t *testing.T) {

@@ -3,7 +3,7 @@ package scan
 import (
 	"sort"
 
-	"github.com/andoniaf/yatt/internal/triage"
+	"github.com/unicrons/yatt/internal/triage"
 )
 
 // TriageFilter selects which findings to report by their standing verdict.

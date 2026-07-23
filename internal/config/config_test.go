@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andoniaf/yatt/internal/config"
+	"github.com/unicrons/yatt/internal/config"
 )
 
 func writeConfig(t *testing.T, contents string) string {

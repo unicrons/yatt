@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/andoniaf/yatt/pkg/engine"
-	"github.com/andoniaf/yatt/pkg/engine/data"
+	"github.com/unicrons/yatt/pkg/engine"
+	"github.com/unicrons/yatt/pkg/engine/data"
 )
 
 func TestKeyboardPermuteContainsPhysicalNeighbors(t *testing.T) {

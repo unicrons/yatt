@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andoniaf/yatt/internal/store/remote"
-	"github.com/andoniaf/yatt/internal/store/remote/remotetest"
+	"github.com/unicrons/yatt/internal/store/remote"
+	"github.com/unicrons/yatt/internal/store/remote/remotetest"
 )
 
 func writeLocalDB(t *testing.T, content string) string {

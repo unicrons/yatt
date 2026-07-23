@@ -1,4 +1,4 @@
-module github.com/andoniaf/yatt
+module github.com/unicrons/yatt
 
 go 1.26.4
 

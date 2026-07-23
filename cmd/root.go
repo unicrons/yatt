@@ -9,12 +9,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/andoniaf/yatt/internal/config"
-	"github.com/andoniaf/yatt/internal/render"
-	"github.com/andoniaf/yatt/internal/resolver"
-	"github.com/andoniaf/yatt/internal/scan"
-	"github.com/andoniaf/yatt/internal/store"
-	"github.com/andoniaf/yatt/internal/store/remote"
+	"github.com/unicrons/yatt/internal/config"
+	"github.com/unicrons/yatt/internal/render"
+	"github.com/unicrons/yatt/internal/resolver"
+	"github.com/unicrons/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/store"
+	"github.com/unicrons/yatt/internal/store/remote"
 )
 
 // newStore is the seam tests replace so a command test never touches the user's

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andoniaf/yatt/internal/store"
-	"github.com/andoniaf/yatt/internal/store/remote"
-	"github.com/andoniaf/yatt/internal/store/remote/remotetest"
+	"github.com/unicrons/yatt/internal/store"
+	"github.com/unicrons/yatt/internal/store/remote"
+	"github.com/unicrons/yatt/internal/store/remote/remotetest"
 )
 
 const (

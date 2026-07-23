@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/andoniaf/yatt/internal/store"
+	"github.com/unicrons/yatt/internal/store"
 )
 
 // Store is the remote-backed store: a plain SQLite store over a downloaded

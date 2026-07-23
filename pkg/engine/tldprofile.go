@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/andoniaf/yatt/pkg/engine/data"
+	"github.com/unicrons/yatt/pkg/engine/data"
 )
 
 // TLD profile names. "common" is the default: fast, low-noise, and

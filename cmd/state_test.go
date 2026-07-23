@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andoniaf/yatt/internal/scan"
-	"github.com/andoniaf/yatt/internal/store"
-	"github.com/andoniaf/yatt/internal/triage"
+	"github.com/unicrons/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/store"
+	"github.com/unicrons/yatt/internal/triage"
 )
 
 // decodeFindings parses the JSON output of a scan or diff command.

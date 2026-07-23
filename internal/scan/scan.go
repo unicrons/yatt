@@ -10,11 +10,11 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/andoniaf/yatt/internal/resolver"
-	"github.com/andoniaf/yatt/internal/store"
-	"github.com/andoniaf/yatt/internal/triage"
-	"github.com/andoniaf/yatt/internal/wildcard"
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/internal/resolver"
+	"github.com/unicrons/yatt/internal/store"
+	"github.com/unicrons/yatt/internal/triage"
+	"github.com/unicrons/yatt/internal/wildcard"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // DefaultConcurrency is how many candidates are resolved at once when no limit

@@ -1,6 +1,6 @@
 package scan
 
-import "github.com/andoniaf/yatt/internal/store"
+import "github.com/unicrons/yatt/internal/store"
 
 // DiffStatus is a candidate's standing relative to the previous scan of the
 // same seed.

@@ -3,8 +3,8 @@ package scan_test
 import (
 	"testing"
 
-	"github.com/andoniaf/yatt/internal/scan"
-	"github.com/andoniaf/yatt/internal/triage"
+	"github.com/unicrons/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/triage"
 )
 
 func filterFindings() []scan.Finding {

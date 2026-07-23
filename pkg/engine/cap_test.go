@@ -3,7 +3,7 @@ package engine_test
 import (
 	"testing"
 
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 func makeCandidates(technique string, n int) []engine.Candidate {

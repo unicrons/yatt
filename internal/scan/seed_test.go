@@ -4,9 +4,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/andoniaf/yatt/internal/scan"
-	"github.com/andoniaf/yatt/internal/triage"
-	"github.com/andoniaf/yatt/pkg/engine"
+	"github.com/unicrons/yatt/internal/scan"
+	"github.com/unicrons/yatt/internal/triage"
+	"github.com/unicrons/yatt/pkg/engine"
 )
 
 // seedRow builds the seed's own row, the way scan.Run emits it: labelled with
