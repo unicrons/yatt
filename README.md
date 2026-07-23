@@ -2,7 +2,6 @@
 
 [![ci](https://github.com/unicrons/yatt/actions/workflows/ci.yml/badge.svg)](https://github.com/unicrons/yatt/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/unicrons/yatt)](https://github.com/unicrons/yatt/releases/latest)
-[![Go Report Card](https://goreportcard.com/badge/github.com/unicrons/yatt)](https://goreportcard.com/report/github.com/unicrons/yatt)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 `yatt` generates look-alike variants of a domain, resolves them over DNS, and reports which ones are
