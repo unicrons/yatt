@@ -153,9 +153,10 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	//
 	// TLD swap is exempt from the per-technique cap: its candidate count is
 	// exactly the TLD list the user chose, and capping it would silently cut
-	// a `--tld-profile full` sweep to the first ~500 TLDs alphabetically.
-	// The explicit --limit still bounds it.
-	permuted := engine.Cap(engine.Permute(seed, techniques), engine.DefaultTechniqueCap, opts.Limit, engine.TechniqueTLD)
+	// a `--tld-profile full` sweep to the first ~500 TLDs alphabetically. Cap
+	// derives that exemption from the technique being a SuffixSwap; the
+	// explicit --limit still bounds it.
+	permuted := engine.Cap(engine.Permute(seed, techniques), engine.DefaultTechniqueCap, opts.Limit)
 	candidates := engine.WithOriginal(seed, permuted)
 
 	findings, err := resolveAll(ctx, opts, candidates)

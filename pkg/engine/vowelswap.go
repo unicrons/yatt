@@ -1,5 +1,10 @@
 package engine
 
+import (
+	"slices"
+	"strings"
+)
+
 func init() {
 	Register(VowelSwap{})
 }
@@ -22,21 +27,21 @@ func (VowelSwap) Name() string { return "vowel-swap" }
 // replacement vowels in "aeiou" order. A label with no vowels yields nothing.
 func (VowelSwap) Permute(sld string) []string {
 	runes := []rune(sld)
-	if len(runes) < 1 {
+	if len(runes) == 0 {
 		return nil
 	}
 
 	var out []string
 	seen := make(map[string]bool)
 	for i, r := range runes {
-		if !isVowel(r) {
+		if !strings.ContainsRune(vowels, r) {
 			continue
 		}
 		for _, v := range vowels {
 			if v == r {
 				continue
 			}
-			swapped := append([]rune(nil), runes...)
+			swapped := slices.Clone(runes)
 			swapped[i] = v
 			variant := string(swapped)
 			if seen[variant] {
@@ -47,13 +52,4 @@ func (VowelSwap) Permute(sld string) []string {
 		}
 	}
 	return out
-}
-
-func isVowel(r rune) bool {
-	for _, v := range vowels {
-		if r == v {
-			return true
-		}
-	}
-	return false
 }

@@ -20,7 +20,7 @@ func (Bitsquatting) Name() string { return "bitsquatting" }
 // skipped entirely, since a single-bit flip on one never lands there.
 func (Bitsquatting) Permute(sld string) []string {
 	runes := []rune(sld)
-	if len(runes) < 1 {
+	if len(runes) == 0 {
 		return nil
 	}
 
@@ -30,7 +30,7 @@ func (Bitsquatting) Permute(sld string) []string {
 		if r > 127 {
 			continue
 		}
-		for _, mask := range []rune{1, 2, 4, 8, 16, 32, 64, 128} {
+		for mask := rune(1); mask <= 128; mask <<= 1 {
 			flipped := r ^ mask
 			if !hostnameRune(flipped) {
 				continue

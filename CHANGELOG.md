@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-07-23
+
+### Changed
+
+- Internal cleanup of the `engine` and `scan` packages — stdlib reuse
+  (`slices`/`strings` helpers), simpler loops, and a hoisted immutable glyph
+  table. CLI behavior is unchanged.
+- `engine.Cap` no longer accepts a variadic `uncapped` technique list: the
+  per-technique cap exemption is now derived from the `SuffixSwap` interface,
+  so a suffix-swap technique is exempt automatically. **Breaking** for
+  `pkg/engine` library users.
+
+### Removed
+
+- Exported `engine.TechniqueTLD` constant. **Breaking** for `pkg/engine`
+  library users.
+
 ## [0.1.1] - 2026-07-22
 
 ### Added

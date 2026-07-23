@@ -13,12 +13,13 @@ const DefaultTechniqueCap = 500
 // technique-order-preserving list is truncated to limit (zero or negative
 // means unlimited).
 //
-// Techniques named in uncapped are exempt from the per-technique cap (the
-// global limit still applies). This exists for TLD swap: its candidate
-// count is exactly the TLD list the caller chose, so capping it would
-// silently break the promise that `--tld-profile full` sweeps the whole
-// IANA list — and in alphabetical order, dropping everything from roughly
-// "g" onward.
+// SuffixSwap techniques are exempt from the per-technique cap (the global
+// limit still applies). This exists for TLD swap: its candidate count is
+// exactly the TLD list the caller chose, so capping it would silently break
+// the promise that `--tld-profile full` sweeps the whole IANA list — and in
+// alphabetical order, dropping everything from roughly "g" onward. Deriving
+// the exemption from the technique's own kind means a future suffix-swap
+// technique inherits it automatically.
 //
 // Every technique here produces its own output nearest-first — omission and
 // transposition are a single edit by construction, keyboard tries the
@@ -27,9 +28,9 @@ const DefaultTechniqueCap = 500
 // own near-misses — so truncating rather than sampling keeps the closest
 // look-alikes and, just as importantly, keeps two scans of the same seed
 // byte-identical, which the diff feature depends on.
-func Cap(candidates []Candidate, techniqueCap, limit int, uncapped ...string) []Candidate {
+func Cap(candidates []Candidate, techniqueCap, limit int) []Candidate {
 	if techniqueCap > 0 {
-		candidates = capPerTechnique(candidates, techniqueCap, uncapped)
+		candidates = capPerTechnique(candidates, techniqueCap)
 	}
 	if limit > 0 && len(candidates) > limit {
 		candidates = candidates[:limit]
@@ -39,16 +40,13 @@ func Cap(candidates []Candidate, techniqueCap, limit int, uncapped ...string) []
 
 // capPerTechnique truncates each technique's contribution independently,
 // preserving the relative order of the techniques and of each technique's
-// own candidates. Techniques named in uncapped pass through whole.
-func capPerTechnique(candidates []Candidate, cap int, uncapped []string) []Candidate {
-	exempt := make(map[string]bool, len(uncapped))
-	for _, name := range uncapped {
-		exempt[name] = true
-	}
+// own candidates. SuffixSwap techniques pass through whole: their candidate
+// count is the suffix list the caller chose, not a fan-out to be bounded.
+func capPerTechnique(candidates []Candidate, cap int) []Candidate {
 	counts := make(map[string]int)
 	out := make([]Candidate, 0, len(candidates))
 	for _, c := range candidates {
-		if !exempt[c.Technique] {
+		if _, exempt := registry[c.Technique].(SuffixSwap); !exempt {
 			if counts[c.Technique] >= cap {
 				continue
 			}

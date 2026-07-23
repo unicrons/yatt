@@ -18,9 +18,11 @@ func makeCandidates(technique string, n int) []engine.Candidate {
 }
 
 func TestCapPerTechnique(t *testing.T) {
+	// Two label-mutating techniques, so both are subject to the cap; tld is a
+	// SuffixSwap and exempt, which TestCapExemptsSuffixSwapTechniques covers.
 	var candidates []engine.Candidate
 	candidates = append(candidates, makeCandidates("omission", 10)...)
-	candidates = append(candidates, makeCandidates("tld", 10)...)
+	candidates = append(candidates, makeCandidates("keyboard", 10)...)
 
 	got := engine.Cap(candidates, 3, 0)
 
@@ -31,17 +33,19 @@ func TestCapPerTechnique(t *testing.T) {
 	if counts["omission"] != 3 {
 		t.Errorf("omission count = %d, want 3", counts["omission"])
 	}
-	if counts["tld"] != 3 {
-		t.Errorf("tld count = %d, want 3", counts["tld"])
+	if counts["keyboard"] != 3 {
+		t.Errorf("keyboard count = %d, want 3", counts["keyboard"])
 	}
 }
 
-func TestCapExemptsUncappedTechniques(t *testing.T) {
+func TestCapExemptsSuffixSwapTechniques(t *testing.T) {
+	// tld is a SuffixSwap, so its whole contribution passes the per-technique
+	// cap; omission, a label technique, is still capped.
 	var candidates []engine.Candidate
 	candidates = append(candidates, makeCandidates("omission", 10)...)
 	candidates = append(candidates, makeCandidates("tld", 10)...)
 
-	got := engine.Cap(candidates, 3, 0, "tld")
+	got := engine.Cap(candidates, 3, 0)
 
 	counts := map[string]int{}
 	for _, c := range got {
@@ -55,11 +59,11 @@ func TestCapExemptsUncappedTechniques(t *testing.T) {
 	}
 }
 
-func TestCapGlobalLimitStillBoundsUncappedTechniques(t *testing.T) {
+func TestCapGlobalLimitStillBoundsSuffixSwapTechniques(t *testing.T) {
 	candidates := makeCandidates("tld", 10)
 
-	if got := engine.Cap(candidates, 3, 5, "tld"); len(got) != 5 {
-		t.Errorf("got %d candidates, want 5: the global limit applies even to uncapped techniques", len(got))
+	if got := engine.Cap(candidates, 3, 5); len(got) != 5 {
+		t.Errorf("got %d candidates, want 5: the global limit applies even to exempt techniques", len(got))
 	}
 }
 
@@ -108,9 +112,9 @@ func TestCapZeroLimitIsUnlimited(t *testing.T) {
 func TestCapAppliesTechniqueCapBeforeGlobalLimit(t *testing.T) {
 	var candidates []engine.Candidate
 	candidates = append(candidates, makeCandidates("omission", 10)...)
-	candidates = append(candidates, makeCandidates("tld", 10)...)
+	candidates = append(candidates, makeCandidates("keyboard", 10)...)
 
-	// Technique cap 3 leaves 3 omission + 3 tld = 6; global limit 4 then
+	// Technique cap 3 leaves 3 omission + 3 keyboard = 6; global limit 4 then
 	// truncates that combined list, not the original 20.
 	got := engine.Cap(candidates, 3, 4)
 	if len(got) != 4 {
@@ -121,7 +125,7 @@ func TestCapAppliesTechniqueCapBeforeGlobalLimit(t *testing.T) {
 			t.Errorf("candidate %+v, want the first 3 to be omission", c)
 		}
 	}
-	if got[3].Technique != "tld" {
-		t.Errorf("4th candidate = %+v, want the first tld candidate", got[3])
+	if got[3].Technique != "keyboard" {
+		t.Errorf("4th candidate = %+v, want the first keyboard candidate", got[3])
 	}
 }

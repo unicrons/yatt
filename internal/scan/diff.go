@@ -137,14 +137,11 @@ func Changes(result DiffResult) []Finding {
 			break
 		}
 	}
-	for _, f := range result.Findings {
-		if f.Diff == DiffNew && !f.IsOriginal() {
-			changes = append(changes, f)
-		}
-	}
-	for _, f := range result.Findings {
-		if f.Diff == DiffChanged && !f.IsOriginal() {
-			changes = append(changes, f)
+	for _, status := range []DiffStatus{DiffNew, DiffChanged} {
+		for _, f := range result.Findings {
+			if f.Diff == status && !f.IsOriginal() {
+				changes = append(changes, f)
+			}
 		}
 	}
 	for _, f := range result.Gone {

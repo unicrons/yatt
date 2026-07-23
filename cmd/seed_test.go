@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -207,7 +208,7 @@ func TestScanKeepsTheSeedThroughTriageFiltering(t *testing.T) {
 			if got := countSeedRows(findings); got != 1 {
 				t.Errorf("filtered report has %d seed rows, want 1: %v", got, candidateNames(findings))
 			}
-			if got := candidateNames(findings); !equalStrings(got, tt.want) {
+			if got := candidateNames(findings); !slices.Equal(got, tt.want) {
 				t.Errorf("filtered report = %v, want %v", got, tt.want)
 			}
 		})
@@ -308,17 +309,4 @@ func TestDiffReportsNoChangesDespiteTheSeedRow(t *testing.T) {
 	if !strings.Contains(stderr, "no changes") {
 		t.Errorf("stderr does not report that nothing changed:\n%s", stderr)
 	}
-}
-
-// equalStrings compares two candidate name lists.
-func equalStrings(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
 }

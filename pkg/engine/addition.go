@@ -17,7 +17,7 @@ func (Addition) Name() string { return "addition" }
 // that would overflow the 63-character label limit are rejected downstream by
 // ValidLabel.
 func (Addition) Permute(sld string) []string {
-	if len([]rune(sld)) < 1 {
+	if len([]rune(sld)) == 0 {
 		return nil
 	}
 
