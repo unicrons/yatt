@@ -1,0 +1,38 @@
+name: Devbox Updates
+
+on:
+  schedule:
+    - cron: "0 8 * * 1" # weekly, Monday 08:00 UTC
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  update:
+    name: Open Devbox Update PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.DEVBOX_UPDATE_APP_ID }}
+          private-key: ${{ secrets.DEVBOX_UPDATE_APP_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Update devbox packages
+        uses: andoniaf/dependabot-devbox@5e69e44323197e135f567a4006719271fc2e5f0b # v0.3.0
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          group-updates: "true"
+          cooldown-days: "7"
