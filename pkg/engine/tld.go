@@ -19,13 +19,10 @@ type TLD struct {
 	TLDs []string
 }
 
-// TechniqueTLD is the TLD swap technique's registered name. It is exported
-// because the scan pipeline treats this technique specially when capping:
-// its candidate count is exactly the TLD list the user chose.
-const TechniqueTLD = "tld"
-
-// Name implements Technique.
-func (TLD) Name() string { return TechniqueTLD }
+// Name implements Technique. TLD swap is exempt from the per-technique cap;
+// that is derived from its being a SuffixSwap (see engine.Cap), not from this
+// name.
+func (TLD) Name() string { return "tld" }
 
 // Permute is unused: TLD varies the suffix, not the label, so it implements
 // SuffixSwap instead. It must still exist to satisfy Technique; there is no

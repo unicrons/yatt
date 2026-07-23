@@ -10,6 +10,11 @@ func init() {
 	Register(Homoglyph{})
 }
 
+// mergedGlyphs is the full look-alike table — ASCII and Unicode combined. The
+// merge is done once at package load rather than on every Permute call: the
+// inputs are immutable, so the result is too.
+var mergedGlyphs = data.Merge(data.GlyphsASCII, data.GlyphsUnicode)
+
 // Homoglyph generates the variants produced by substituting a character, or
 // an adjacent pair of characters, for something that looks like it: a
 // digit/letter look-alike ("0" for "o"), a script look-alike (Cyrillic "а"
@@ -32,7 +37,7 @@ func (Homoglyph) Name() string { return "homoglyph" }
 // suffix — but Permute must still exist to satisfy Technique, and this keeps
 // the technique testable and usable on its own.
 func (h Homoglyph) Permute(sld string) []string {
-	return h.permute(sld, data.Merge(data.GlyphsASCII, data.GlyphsUnicode))
+	return h.permute(sld, mergedGlyphs)
 }
 
 // PermuteWithSuffix implements LabelBySuffix.
@@ -45,7 +50,7 @@ func (h Homoglyph) Permute(sld string) []string {
 func (Homoglyph) PermuteWithSuffix(sld, suffix string) []string {
 	glyphs := data.GlyphsASCII
 	if !idnGated(suffix) {
-		glyphs = data.Merge(data.GlyphsASCII, data.GlyphsUnicode)
+		glyphs = mergedGlyphs
 	}
 	return Homoglyph{}.permute(sld, glyphs)
 }

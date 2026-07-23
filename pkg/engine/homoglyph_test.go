@@ -2,25 +2,17 @@ package engine_test
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/unicrons/yatt/pkg/engine"
 )
 
-func contains(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
-	}
-	return false
-}
-
 func TestHomoglyphPermuteTwoCharWindowFires(t *testing.T) {
 	// "rn" -> "m" only fires from the two-character window: the label has
 	// no single character that maps to "m" on its own.
 	got := engine.Homoglyph{}.Permute("modern")
-	if !contains(got, "modem") {
+	if !slices.Contains(got, "modem") {
 		t.Errorf("Permute(\"modern\") = %v, want it to contain \"modem\" (rn -> m)", got)
 	}
 }
@@ -28,14 +20,14 @@ func TestHomoglyphPermuteTwoCharWindowFires(t *testing.T) {
 func TestHomoglyphPermuteSingleCharSubstitutionFires(t *testing.T) {
 	// "m" -> "rn" is the reverse direction, from the same table entry.
 	got := engine.Homoglyph{}.Permute("modem")
-	if !contains(got, "modern") {
+	if !slices.Contains(got, "modern") {
 		t.Errorf("Permute(\"modem\") = %v, want it to contain \"modern\" (m -> rn)", got)
 	}
 }
 
 func TestHomoglyphPermuteASCIIDigitSubstitution(t *testing.T) {
 	got := engine.Homoglyph{}.Permute("google")
-	if !contains(got, "g00gle") {
+	if !slices.Contains(got, "g00gle") {
 		t.Errorf("Permute(\"google\") = %v, want it to contain \"g00gle\" (compounded o -> 0 twice)", got)
 	}
 }
@@ -43,14 +35,14 @@ func TestHomoglyphPermuteASCIIDigitSubstitution(t *testing.T) {
 func TestHomoglyphPermuteUnicodeSubstitution(t *testing.T) {
 	got := engine.Homoglyph{}.Permute("apple")
 	// Cyrillic "а" (U+0430) replacing the Latin "a".
-	if !contains(got, "аpple") {
+	if !slices.Contains(got, "аpple") {
 		t.Errorf("Permute(\"apple\") did not contain the Cyrillic-a variant")
 	}
 }
 
 func TestHomoglyphPermuteNeverReturnsTheInputUnchanged(t *testing.T) {
 	got := engine.Homoglyph{}.Permute("google")
-	if contains(got, "google") {
+	if slices.Contains(got, "google") {
 		t.Error("Permute(\"google\") contains the unchanged input")
 	}
 }
@@ -70,20 +62,20 @@ func TestHomoglyphPermuteWithSuffixGatesUnicode(t *testing.T) {
 	ungated := engine.Homoglyph{}.PermuteWithSuffix("apple", "com")
 	gated := engine.Homoglyph{}.PermuteWithSuffix("apple", "us")
 
-	if !contains(ungated, "аpple") {
+	if !slices.Contains(ungated, "аpple") {
 		t.Fatalf("PermuteWithSuffix(%q, %q) does not contain the Cyrillic-a variant, want it present for an ungated TLD", "apple", "com")
 	}
-	if contains(gated, "аpple") {
+	if slices.Contains(gated, "аpple") {
 		t.Errorf("PermuteWithSuffix(%q, %q) contains a Unicode variant, want it suppressed for a gated TLD", "apple", "us")
 	}
 	// ASCII substitutions are never gated: they need no IDN support.
-	if !contains(gated, "appl3") {
+	if !slices.Contains(gated, "appl3") {
 		t.Errorf("PermuteWithSuffix(%q, %q) = %v, want the ASCII substitution to still fire", "apple", "us", gated)
 	}
 
 	// The gate keys bare TLDs but a public suffix is often multi-label: the
 	// registry policy that gates "example.jp" gates "example.co.jp" too.
-	if gatedMulti := (engine.Homoglyph{}).PermuteWithSuffix("apple", "co.jp"); contains(gatedMulti, "аpple") {
+	if gatedMulti := (engine.Homoglyph{}).PermuteWithSuffix("apple", "co.jp"); slices.Contains(gatedMulti, "аpple") {
 		t.Errorf("PermuteWithSuffix(%q, %q) contains a Unicode variant, want the gate to cover a multi-label suffix under a gated ccTLD", "apple", "co.jp")
 	}
 }

@@ -1,5 +1,7 @@
 package engine
 
+import "slices"
+
 func init() {
 	Register(Transposition{})
 }
@@ -24,7 +26,7 @@ func (Transposition) Permute(sld string) []string {
 	out := make([]string, 0, len(runes)-1)
 	seen := make(map[string]bool, len(runes)-1)
 	for i := 0; i < len(runes)-1; i++ {
-		swapped := append([]rune(nil), runes...)
+		swapped := slices.Clone(runes)
 		swapped[i], swapped[i+1] = swapped[i+1], swapped[i]
 		variant := string(swapped)
 		if seen[variant] {

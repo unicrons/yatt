@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/unicrons/yatt/internal/triage"
@@ -34,10 +35,10 @@ func (f TriageFilter) Match(status triage.Status) bool {
 	if status == "" {
 		status = triage.StatusNew
 	}
-	if len(f.Include) > 0 && !contains(f.Include, status) {
+	if len(f.Include) > 0 && !slices.Contains(f.Include, status) {
 		return false
 	}
-	return !contains(f.Exclude, status)
+	return !slices.Contains(f.Exclude, status)
 }
 
 // Apply returns the findings that pass the filter, preserving their order.
@@ -110,13 +111,4 @@ func RegisteredFirst(findings []Finding) []Finding {
 		return out[i].Registered && !out[j].Registered
 	})
 	return out
-}
-
-func contains(statuses []triage.Status, status triage.Status) bool {
-	for _, s := range statuses {
-		if s == status {
-			return true
-		}
-	}
-	return false
 }
