@@ -20,7 +20,7 @@ mechanism, not the tool.
 Two of them are not typos at all, and are easy to misread in a report:
 
 - **`bitsquatting`** models a *memory error*, not a keystroke. A bit flips in a cached hostname —
-  through faulty RAM, or a cosmic ray — and a request meant for `example.com` leaves for
+  through faulty RAM, or a cosmic ray ([yes, for real](https://www.youtube.com/watch?v=vj4RW39KICA)) — and a request meant for `example.com` leaves for
   `dxample.com` with nobody having typed anything. Registering the flip neighbours of a popular
   domain is a real, documented squatter pattern, which is why these candidates are worth resolving
   even though no human would ever type one.

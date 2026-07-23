@@ -3,9 +3,9 @@
 `yatt` generates look-alike variants of a domain, resolves them over DNS, and reports which ones are
 registered.
 
-Unlike the stateless tools it takes its algorithms from, `yatt` remembers: scan history, cross-scan
-diffs, and persistent triage state are the point. Re-scanning a seed tells you what *changed*, and a
-verdict you record once is never asked of you again.
+Run a typosquatting scan twice and most tools hand you the same wall of results both times. `yatt`
+remembers: it keeps history, shows you what *changed* since last time, and never re-asks about a
+domain you've already triaged.
 
 ![yatt scan demo](docs/img/scan.gif)
 
