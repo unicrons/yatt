@@ -1,5 +1,10 @@
 # Yet Another Typosquatting Tool (`yatt`)
 
+[![ci](https://github.com/unicrons/yatt/actions/workflows/ci.yml/badge.svg)](https://github.com/unicrons/yatt/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/unicrons/yatt)](https://github.com/unicrons/yatt/releases/latest)
+[![Go Report Card](https://goreportcard.com/badge/github.com/unicrons/yatt)](https://goreportcard.com/report/github.com/unicrons/yatt)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 `yatt` generates look-alike variants of a domain, resolves them over DNS, and reports which ones are
 registered.
 
@@ -22,18 +27,36 @@ domain you've already triaged.
 - State in SQLite — a local file by default, or kept in S3 and shared across machines.
 - Scan profiles, a config file, table/JSON/NDJSON output, and AbuseIPDB/Shodan enrichment links.
 
+## Installation
+
+Download a prebuilt binary for your platform from the
+[latest release](https://github.com/unicrons/yatt/releases/latest), extract it, and put `yatt` on
+your `PATH`:
+
+```sh
+tar -xzf yatt_Linux_arm64.tar.gz   # or unzip yatt_Darwin_arm64.zip on macOS
+./yatt --version
+```
+
+With a Go toolchain you can install from source instead:
+
+```sh
+go install github.com/unicrons/yatt@latest
+```
+
+Or build the checkout directly (the devbox shell provides go, goose, golangci-lint, sqlite and
+gotestsum):
+
+```sh
+devbox shell
+go build -o yatt .
+./yatt --version
+```
+
 ## Quickstart
 
 ```sh
-devbox shell          # go, goose, golangci-lint, sqlite, gotestsum
-go run . scan example.com
-```
-
-Or build a binary:
-
-```sh
-go build -o yatt .
-./yatt scan example.com
+yatt scan example.com
 ```
 
 ## Usage
@@ -104,3 +127,11 @@ The homoglyph tables are derived from the Unicode Consortium's
 [`confusables.txt`](https://www.unicode.org/Public/security/latest/confusables.txt), and the full TLD
 list from the [IANA Root Zone Database](https://data.iana.org/TLD/tlds-alpha-by-domain.txt).
 `pkg/engine/data/PROVENANCE.md` records the source behind every table, and which of them regenerate.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
+
+---
+
+Made with ❤️ by [unicrons.cloud](https://unicrons.cloud) 🦄
