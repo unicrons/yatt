@@ -99,7 +99,9 @@ func NewRootCmd() *cobra.Command {
 			"and reports which ones are registered.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Version:       fmt.Sprintf("%s (commit %s, built %s)", resolveVersion(), Commit, Date),
 	}
+	root.SetVersionTemplate("yatt {{.Version}}\n")
 
 	flags := root.PersistentFlags()
 	flags.StringVarP(&opts.output, "output", "o", "table",
@@ -141,12 +143,16 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newDiffCmd(opts))
 	root.AddCommand(newTriageCmd(opts))
 	root.AddCommand(newStateCmd(opts))
+	root.AddCommand(NewVersionCmd())
 
 	return root
 }
 
 // Execute runs the CLI and returns the process exit code.
 func Execute() int {
+	// Keep the version stamped into remote lock objects in step with what
+	// `yatt --version` reports, so a lock names the build that took it.
+	remote.Version = resolveVersion()
 	root := NewRootCmd()
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

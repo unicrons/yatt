@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime/debug"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -16,6 +15,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 )
+
+// Version is the yatt version recorded in new lock objects. The cmd package
+// sets it at startup to whatever `yatt --version` reports; it stays "devel" for
+// builds with no version wiring (and in tests).
+var Version = "devel"
 
 // LockInfo is the body of the lock object: enough for the holder of a stale
 // lock to be identified from another machine, where a pid alone would say
@@ -71,7 +75,7 @@ func acquireLock(ctx context.Context, c Client, bucket, key, rawURL, op string) 
 		Hostname:  hostname(),
 		PID:       os.Getpid(),
 		CreatedAt: time.Now().UTC(),
-		Version:   buildVersion(),
+		Version:   Version,
 		Operation: op,
 	})
 	if err != nil {
@@ -175,13 +179,4 @@ func hostname() string {
 		return "unknown-host"
 	}
 	return name
-}
-
-// buildVersion is best-effort: yatt has no version wiring, so the module
-// version stamped by `go install` is the most that can be reported.
-func buildVersion() string {
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
-	}
-	return "devel"
 }
