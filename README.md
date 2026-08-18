@@ -97,7 +97,14 @@ yatt scan example.com --profile full
 
 A verdict recorded once filters every future scan:
 
+```sh
+yatt triage example.com xample.com --status owned --note "defensive registration"
+yatt scan example.com --exclude-status owned   # hide what we registered ourselves
+```
+
 ![yatt triage demo](docs/img/triage.gif)
+
+All triage statuses are described at [docs/state.md](docs/state.md).
 
 ## Documentation
 
