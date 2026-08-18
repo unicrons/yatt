@@ -37,6 +37,9 @@ scan flags:
       --abuseipdb-enrich        look up each resolved address's AbuseIPDB confidence score
                                 (needs YATT_ABUSEIPDB_KEY); makes one AbuseIPDB API call per
                                 unique address and spends API credits
+      --abuseipdb-rate float    AbuseIPDB requests per second when --abuseipdb-enrich is set;
+                                raise this above the free-tier-safe default if your plan
+                                allows it (default 1)
       --status strings          report only candidates with these triage statuses
       --exclude-status strings  report every candidate except those with these statuses
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ type scanOptions struct {
 	profile          string
 	wide             bool
 	abuseipdbEnrich  bool
+	abuseipdbRate    float64
 }
 
 // triageFilter resolves the triage flags, rejecting the run if any status is
@@ -145,6 +147,9 @@ func newScanCmd(global *globalOptions) *cobra.Command {
 	flags.BoolVar(&opts.abuseipdbEnrich, "abuseipdb-enrich", false,
 		"look up each resolved address's AbuseIPDB confidence score (needs YATT_ABUSEIPDB_KEY); "+
 			"makes one AbuseIPDB API call per unique address and spends API credits")
+	flags.Float64Var(&opts.abuseipdbRate, "abuseipdb-rate", enrich.DefaultRate,
+		"AbuseIPDB requests per second when --abuseipdb-enrich is set; "+
+			"raise this above the free-tier-safe default if your AbuseIPDB plan allows it")
 	flags.StringVar(&opts.profile, "profile", "",
 		"scan profile ("+strings.Join(config.Names(), ", ")+", or one defined in --config); "+
 			"sets technique/tld-profile/concurrency/qps/timeout/limit, each still overridable by its own flag")
@@ -236,7 +241,7 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 		if key == "" {
 			return fmt.Errorf("--abuseipdb-enrich requires the YATT_ABUSEIPDB_KEY environment variable to be set")
 		}
-		renderOpts = append(renderOpts, render.AbuseIPDB(newEnrichClient(key)))
+		renderOpts = append(renderOpts, render.AbuseIPDB(newEnrichClient(key, opts.abuseipdbRate)))
 	}
 	renderer, err := render.New(global.output, renderOpts...)
 	if err != nil {
@@ -350,15 +355,20 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 	reported = scan.RegisteredFirst(reported)
 
 	if opts.abuseipdbEnrich && global.verbose {
-		// AbuseIPDB lookups are rate-limited to one per second with no
-		// progress indicator of their own (unlike DNS resolution above), so a
-		// scan turning up many unique addresses would otherwise sit silent
-		// for that many seconds before the report appears — indistinguishable
-		// from a hang. This heads-up is best-effort: a failed write to
-		// stderr must not abort a scan.
+		// AbuseIPDB lookups have no progress indicator of their own (unlike
+		// DNS resolution above), so a scan turning up many unique addresses
+		// would otherwise sit silent for however long the rate limit takes
+		// before the report appears — indistinguishable from a hang. This
+		// heads-up is best-effort: a failed write to stderr must not abort a
+		// scan.
+		rate := opts.abuseipdbRate
+		if rate <= 0 {
+			rate = enrich.DefaultRate
+		}
 		if n := uniqueAddressCount(reported); n > 0 {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-				"looking up %d unique address(es) on AbuseIPDB (rate-limited to 1/s, ~%ds)\n", n, n)
+				"looking up %d unique address(es) on AbuseIPDB (rate-limited to %g/s, ~%ds)\n",
+				n, rate, int(math.Ceil(float64(n)/rate)))
 		}
 	}
 

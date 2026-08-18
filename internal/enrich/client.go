@@ -19,11 +19,11 @@ import (
 // best-effort failure.
 var ErrInvalidKey = errors.New("AbuseIPDB rejected the configured key")
 
-// abuseIPDBRate bounds how many requests Client sends to AbuseIPDB per
-// second. It is hardcoded rather than a flag: the feature's whole surface is
-// the one flag that turns it on, and a conservative fixed rate keeps a scan
-// with many unique addresses from burning a free-tier quota in one burst.
-const abuseIPDBRate = 1
+// DefaultRate bounds how many requests Client sends to AbuseIPDB per second
+// when NewClient is given a qps of zero or less. It is deliberately
+// conservative — safe for a free-tier quota — since a caller who knows they
+// are on a paid plan is the one who opts into a higher rate.
+const DefaultRate float64 = 1
 
 // requestTimeout bounds a single AbuseIPDB lookup, so one slow response
 // cannot stall the whole render step.
@@ -39,13 +39,21 @@ type Client struct {
 	cache map[string]int
 }
 
-// NewClient returns a Client authenticating with key. The caller is
+// NewClient returns a Client authenticating with key, sending at most qps
+// requests per second (DefaultRate if qps is zero or negative). The caller is
 // responsible for validating key is non-empty; NewClient does not.
-func NewClient(key string) *Client {
+func NewClient(key string, qps float64) *Client {
+	if qps <= 0 {
+		qps = DefaultRate
+	}
 	return &Client{
-		key:   key,
-		http:  &http.Client{},
-		limit: rate.NewLimiter(rate.Limit(abuseIPDBRate), 1),
+		key:  key,
+		http: &http.Client{},
+		// A burst of one keeps the spacing even, mirroring
+		// internal/resolver's RateLimited: a larger burst would let a run of
+		// unique addresses spike right when AbuseIPDB is most likely to start
+		// throttling it.
+		limit: rate.NewLimiter(rate.Limit(qps), 1),
 		cache: make(map[string]int),
 	}
 }

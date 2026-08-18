@@ -90,14 +90,21 @@ of the same seed looks every address up again. A lookup that fails for one addre
 limit) leaves that address without a score rather than failing the whole report; an invalid key fails
 the run immediately, since every subsequent lookup would fail the same way.
 
-Lookups run sequentially, one per second, and have no progress indicator of their own — a scan
-turning up many unique addresses can sit quiet for that many seconds after the DNS progress bar
-clears and before the report prints. `--verbose` prints how many lookups are about to happen so that
-wait doesn't read as a hang:
+Lookups run sequentially at a conservative default of one per second, and have no progress indicator
+of their own — a scan turning up many unique addresses can sit quiet for that many seconds after the
+DNS progress bar clears and before the report prints. `--verbose` prints how many lookups are about
+to happen so that wait doesn't read as a hang:
 
 ```sh
 yatt scan example.com --abuseipdb-enrich --verbose
 # stderr: looking up 12 unique address(es) on AbuseIPDB (rate-limited to 1/s, ~12s)
 ```
 
-`diff` never re-resolves or makes live calls, so it has no `--abuseipdb-enrich` flag.
+The one-per-second default is sized for AbuseIPDB's free tier. If your plan allows a higher rate,
+`--abuseipdb-rate` raises it — this also shrinks the silent wait above:
+
+```sh
+yatt scan example.com --abuseipdb-enrich --abuseipdb-rate 20
+```
+
+`diff` never re-resolves or makes live calls, so it has no `--abuseipdb-enrich`/`--abuseipdb-rate` flags.

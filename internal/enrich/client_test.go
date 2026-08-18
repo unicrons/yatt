@@ -32,7 +32,7 @@ func newTestClient(t *testing.T, srv *httptest.Server, key string) *enrich.Clien
 	original := enrich.CheckURL
 	enrich.CheckURL = srv.URL
 	t.Cleanup(func() { enrich.CheckURL = original })
-	return enrich.NewClient(key)
+	return enrich.NewClient(key, enrich.DefaultRate)
 }
 
 func TestScoreSendsKeyHeaderAndQueryParams(t *testing.T) {

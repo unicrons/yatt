@@ -110,12 +110,18 @@ func withTempStore(t *testing.T) {
 	t.Cleanup(func() { newStore = original })
 }
 
+// fakeEnrichCall records what runScan actually passed to newEnrichClient.
+type fakeEnrichCall struct {
+	key  string
+	rate float64
+}
+
 // withFakeEnrichClient swaps newEnrichClient for the duration of a test so
 // --abuseipdb-enrich never reaches the real AbuseIPDB API: the client it
 // hands back still runs the real Client code, but points at a local server
-// that answers every check request with score. It returns the key the
+// that answers every check request with score. It returns the arguments the
 // command actually passed to newEnrichClient.
-func withFakeEnrichClient(t *testing.T, score int) *string {
+func withFakeEnrichClient(t *testing.T, score int) *fakeEnrichCall {
 	t.Helper()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -128,15 +134,15 @@ func withFakeEnrichClient(t *testing.T, score int) *string {
 	enrich.CheckURL = srv.URL
 	t.Cleanup(func() { enrich.CheckURL = originalCheckURL })
 
-	var gotKey string
+	call := &fakeEnrichCall{}
 	original := newEnrichClient
-	newEnrichClient = func(key string) *enrich.Client {
-		gotKey = key
-		return enrich.NewClient(key)
+	newEnrichClient = func(key string, qps float64) *enrich.Client {
+		call.key, call.rate = key, qps
+		return enrich.NewClient(key, qps)
 	}
 	t.Cleanup(func() { newEnrichClient = original })
 
-	return &gotKey
+	return call
 }
 
 // run executes the command tree with args, returning stdout and stderr.
@@ -257,7 +263,7 @@ func TestScanAbuseipdbEnrichRequiresEnvVar(t *testing.T) {
 func TestScanAbuseipdbEnrichWiresClientThroughToJSON(t *testing.T) {
 	withTempStore(t)
 	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
-	gotKey := withFakeEnrichClient(t, 77)
+	call := withFakeEnrichClient(t, 77)
 	t.Setenv("YATT_ABUSEIPDB_KEY", "a-real-looking-key")
 
 	stdout, _, err := run(t, "scan", "example.com", "--abuseipdb-enrich",
@@ -265,12 +271,46 @@ func TestScanAbuseipdbEnrichWiresClientThroughToJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if *gotKey != "a-real-looking-key" {
-		t.Errorf("key passed to newEnrichClient = %q, want %q", *gotKey, "a-real-looking-key")
+	if call.key != "a-real-looking-key" {
+		t.Errorf("key passed to newEnrichClient = %q, want %q", call.key, "a-real-looking-key")
 	}
 	if !strings.Contains(stdout, `"abuse_confidence_score": 77`) {
 		t.Errorf("output is missing the AbuseIPDB score:\n%s", stdout)
 	}
+}
+
+// --abuseipdb-rate defaults to enrich.DefaultRate and, when set, threads
+// straight through to newEnrichClient — the flag exists for AbuseIPDB plans
+// that can go faster than the free-tier-safe default.
+func TestScanAbuseipdbRateFlag(t *testing.T) {
+	t.Run("defaults to enrich.DefaultRate", func(t *testing.T) {
+		withTempStore(t)
+		withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
+		call := withFakeEnrichClient(t, 0)
+		t.Setenv("YATT_ABUSEIPDB_KEY", "a-real-looking-key")
+
+		if _, _, err := run(t, "scan", "example.com", "--abuseipdb-enrich", "--technique", "omission"); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if call.rate != enrich.DefaultRate {
+			t.Errorf("rate passed to newEnrichClient = %g, want the default %g", call.rate, enrich.DefaultRate)
+		}
+	})
+
+	t.Run("overrides the default", func(t *testing.T) {
+		withTempStore(t)
+		withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
+		call := withFakeEnrichClient(t, 0)
+		t.Setenv("YATT_ABUSEIPDB_KEY", "a-real-looking-key")
+
+		if _, _, err := run(t, "scan", "example.com", "--abuseipdb-enrich", "--abuseipdb-rate", "25",
+			"--technique", "omission"); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if call.rate != 25 {
+			t.Errorf("rate passed to newEnrichClient = %g, want 25", call.rate)
+		}
+	})
 }
 
 // The AbuseIPDB lookup has no progress indicator of its own and is

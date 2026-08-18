@@ -62,7 +62,7 @@ func fakeAbuseIPDBClient(t *testing.T, score int, failFor string) *enrich.Client
 	})
 	pointAbuseIPDBAt(t, srv)
 
-	return enrich.NewClient("test-key")
+	return enrich.NewClient("test-key", enrich.DefaultRate)
 }
 
 func sampleFindings() []scan.Finding {
@@ -613,7 +613,7 @@ func TestTableRenderFailsHardOnInvalidAbuseIPDBKey(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 	pointAbuseIPDBAt(t, srv)
-	renderer, err := render.New("table", render.AbuseIPDB(enrich.NewClient("bad-key")))
+	renderer, err := render.New("table", render.AbuseIPDB(enrich.NewClient("bad-key", enrich.DefaultRate)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -637,7 +637,7 @@ func TestJSONRenderFailsHardOnInvalidAbuseIPDBKey(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 	})
 	pointAbuseIPDBAt(t, srv)
-	renderer, err := render.New("json", render.AbuseIPDB(enrich.NewClient("bad-key")))
+	renderer, err := render.New("json", render.AbuseIPDB(enrich.NewClient("bad-key", enrich.DefaultRate)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestTableRenderAttemptsAFailingAddressOnlyOnce(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	pointAbuseIPDBAt(t, srv)
-	renderer, err := render.New("table", render.AbuseIPDB(enrich.NewClient("test-key")))
+	renderer, err := render.New("table", render.AbuseIPDB(enrich.NewClient("test-key", enrich.DefaultRate)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
