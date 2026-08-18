@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/unicrons/yatt/internal/config"
+	"github.com/unicrons/yatt/internal/enrich"
 	"github.com/unicrons/yatt/internal/render"
 	"github.com/unicrons/yatt/internal/resolver"
 	"github.com/unicrons/yatt/internal/scan"
@@ -24,6 +26,10 @@ var newResolver = func(addr string, timeout time.Duration) (resolver.Resolver, e
 	return resolver.New(addr, timeout)
 }
 
+// newEnrichClient is the seam tests replace with a fake AbuseIPDB client, so
+// a command test never talks to the real API.
+var newEnrichClient = enrich.NewClient
+
 // scanOptions holds the flags local to the scan command.
 type scanOptions struct {
 	status           []string
@@ -35,6 +41,8 @@ type scanOptions struct {
 	showUnregistered bool
 	profile          string
 	wide             bool
+	abuseipdbEnrich  bool
+	abuseipdbRate    float64
 }
 
 // triageFilter resolves the triage flags, rejecting the run if any status is
@@ -136,6 +144,12 @@ func newScanCmd(global *globalOptions) *cobra.Command {
 		"also report candidates nobody has registered")
 	flags.BoolVar(&opts.wide, "wide", false,
 		"add the enrichment-link column to the table (always present in json/ndjson output)")
+	flags.BoolVar(&opts.abuseipdbEnrich, "abuseipdb-enrich", false,
+		"look up each resolved address's AbuseIPDB confidence score (needs YATT_ABUSEIPDB_KEY); "+
+			"makes one AbuseIPDB API call per unique address and spends API credits")
+	flags.Float64Var(&opts.abuseipdbRate, "abuseipdb-rate", enrich.DefaultRate,
+		"AbuseIPDB requests per second when --abuseipdb-enrich is set; "+
+			"raise this above the free-tier-safe default if your AbuseIPDB plan allows it")
 	flags.StringVar(&opts.profile, "profile", "",
 		"scan profile ("+strings.Join(config.Names(), ", ")+", or one defined in --config); "+
 			"sets technique/tld-profile/concurrency/qps/timeout/limit, each still overridable by its own flag")
@@ -158,6 +172,19 @@ func progressReporter(stderr io.Writer) *render.Progress {
 		return nil
 	}
 	return render.NewProgress(f)
+}
+
+// uniqueAddressCount returns how many distinct addresses appear across
+// findings, so the --abuseipdb-enrich heads-up can name how many lookups are
+// about to happen.
+func uniqueAddressCount(findings []scan.Finding) int {
+	seen := make(map[string]struct{})
+	for _, f := range findings {
+		for _, addr := range f.Addresses {
+			seen[addr] = struct{}{}
+		}
+	}
+	return len(seen)
 }
 
 // profileFlags maps a Profile field's own name (config.Profile's
@@ -208,6 +235,13 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 	renderOpts := global.renderOptions()
 	if opts.wide {
 		renderOpts = append(renderOpts, render.Wide())
+	}
+	if opts.abuseipdbEnrich {
+		key := os.Getenv("YATT_ABUSEIPDB_KEY")
+		if key == "" {
+			return fmt.Errorf("--abuseipdb-enrich requires the YATT_ABUSEIPDB_KEY environment variable to be set")
+		}
+		renderOpts = append(renderOpts, render.AbuseIPDB(newEnrichClient(key, opts.abuseipdbRate)))
 	}
 	renderer, err := render.New(global.output, renderOpts...)
 	if err != nil {
@@ -320,7 +354,25 @@ func runScan(cmd *cobra.Command, global *globalOptions, opts *scanOptions, seed 
 	}
 	reported = scan.RegisteredFirst(reported)
 
-	if err := renderer.Render(cmd.OutOrStdout(), reported); err != nil {
+	if opts.abuseipdbEnrich && global.verbose {
+		// AbuseIPDB lookups have no progress indicator of their own (unlike
+		// DNS resolution above), so a scan turning up many unique addresses
+		// would otherwise sit silent for however long the rate limit takes
+		// before the report appears — indistinguishable from a hang. This
+		// heads-up is best-effort: a failed write to stderr must not abort a
+		// scan.
+		rate := opts.abuseipdbRate
+		if rate <= 0 {
+			rate = enrich.DefaultRate
+		}
+		if n := uniqueAddressCount(reported); n > 0 {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+				"looking up %d unique address(es) on AbuseIPDB (rate-limited to %g/s, ~%ds)\n",
+				n, rate, int(math.Ceil(float64(n)/rate)))
+		}
+	}
+
+	if err := renderer.Render(cmd.Context(), cmd.OutOrStdout(), reported); err != nil {
 		return err
 	}
 

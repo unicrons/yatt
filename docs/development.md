@@ -19,7 +19,7 @@ internal/store/      database/sql repository over SQLite; goose migrations (embe
 internal/store/remote/  S3 transport for the store: lock object, download, upload-on-close
 internal/triage/     triage status vocabulary and transition rules
 internal/config/     scan profiles, config-file loading, and the precedence chain
-internal/enrich/     AbuseIPDB / Shodan link builders (no HTTP calls)
+internal/enrich/     AbuseIPDB / Shodan link builders, plus the opt-in AbuseIPDB score client
 internal/render/     table / JSON / NDJSON renderers and the live progress line
 ```
 

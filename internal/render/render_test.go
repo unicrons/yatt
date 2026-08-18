@@ -2,17 +2,68 @@ package render_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/unicrons/yatt/internal/enrich"
 	"github.com/unicrons/yatt/internal/render"
 	"github.com/unicrons/yatt/internal/scan"
 	"github.com/unicrons/yatt/internal/store"
 	"github.com/unicrons/yatt/internal/triage"
 	"github.com/unicrons/yatt/pkg/engine"
 )
+
+// countingAbuseIPDBServer returns an httptest.Server standing in for the
+// AbuseIPDB check endpoint, along with a counter of how many requests it
+// received. handler decides the response for each request.
+func countingAbuseIPDBServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request)) (*httptest.Server, *int32) {
+	t.Helper()
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		handler(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// pointAbuseIPDBAt redirects enrich.CheckURL at srv for the duration of the
+// test.
+func pointAbuseIPDBAt(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	original := enrich.CheckURL
+	enrich.CheckURL = srv.URL
+	t.Cleanup(func() { enrich.CheckURL = original })
+}
+
+// fakeAbuseIPDBClient returns an *enrich.Client pointed at a local httptest
+// server that answers every check request with score for any IP, so render
+// tests never touch the real AbuseIPDB API. failFor, when non-empty,
+// makes the server return a 500 for that one address instead, standing in
+// for a lookup that fails.
+func fakeAbuseIPDBClient(t *testing.T, score int, failFor string) *enrich.Client {
+	t.Helper()
+
+	srv, _ := countingAbuseIPDBServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if failFor != "" && r.URL.Query().Get("ipAddress") == failFor {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"abuseConfidenceScore":` + strconv.Itoa(score) + `}}`))
+	})
+	pointAbuseIPDBAt(t, srv)
+
+	return enrich.NewClient("test-key", enrich.DefaultRate)
+}
 
 func sampleFindings() []scan.Finding {
 	return []scan.Finding{
@@ -104,7 +155,7 @@ func TestNewDefaultsToTable(t *testing.T) {
 
 func TestTableRender(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (render.TableRenderer{}).Render(&buf, sampleFindings()); err != nil {
+	if err := (render.TableRenderer{}).Render(context.Background(), &buf, sampleFindings()); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -123,7 +174,7 @@ func TestTableRender(t *testing.T) {
 func TestTableRenderMarksAbsentDiffStatus(t *testing.T) {
 	var buf bytes.Buffer
 	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission"}}
-	if err := (render.TableRenderer{}).Render(&buf, findings); err != nil {
+	if err := (render.TableRenderer{}).Render(context.Background(), &buf, findings); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	// A stateless run leaves the diff column empty; it must still be a
@@ -188,7 +239,7 @@ func TestNDJSONRenderScansOneObjectPerLine(t *testing.T) {
 
 func TestJSONRenderCarriesDiffStatus(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (render.JSONRenderer{}).Render(&buf, sampleFindings()); err != nil {
+	if err := (render.JSONRenderer{}).Render(context.Background(), &buf, sampleFindings()); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -211,7 +262,7 @@ func TestTableRenderMarksAbsentTriageStatus(t *testing.T) {
 	// must still be present, or the table silently loses a column between a
 	// stored and an unstored run.
 	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission"}}
-	if err := (render.TableRenderer{}).Render(&buf, findings); err != nil {
+	if err := (render.TableRenderer{}).Render(context.Background(), &buf, findings); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	if !strings.Contains(buf.String(), "TRIAGE") {
@@ -221,7 +272,7 @@ func TestTableRenderMarksAbsentTriageStatus(t *testing.T) {
 
 func TestJSONRenderCarriesTriageStatus(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (render.JSONRenderer{}).Render(&buf, sampleFindings()); err != nil {
+	if err := (render.JSONRenderer{}).Render(context.Background(), &buf, sampleFindings()); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -249,7 +300,7 @@ func TestTableRenderMarksWildcardCandidates(t *testing.T) {
 		{Candidate: "eample.com", Technique: "omission", Registered: true, HasA: true,
 			Addresses: []string{"198.51.100.7"}},
 	}
-	if err := (render.TableRenderer{}).Render(&buf, findings); err != nil {
+	if err := (render.TableRenderer{}).Render(context.Background(), &buf, findings); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -287,7 +338,7 @@ func columnIndex(t *testing.T, header, name string) int {
 func TestJSONRenderCarriesWildcard(t *testing.T) {
 	var buf bytes.Buffer
 	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission", Wildcard: true}}
-	if err := (render.JSONRenderer{}).Render(&buf, findings); err != nil {
+	if err := (render.JSONRenderer{}).Render(context.Background(), &buf, findings); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -357,7 +408,7 @@ func TestNDJSONRenderTriageOneObjectPerLine(t *testing.T) {
 
 func TestTableRenderEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (render.TableRenderer{}).Render(&buf, nil); err != nil {
+	if err := (render.TableRenderer{}).Render(context.Background(), &buf, nil); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	// The header must still print, so an empty result set is distinguishable
@@ -370,7 +421,7 @@ func TestTableRenderEmpty(t *testing.T) {
 func TestTableRenderShowsErrors(t *testing.T) {
 	var buf bytes.Buffer
 	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission", Error: "i/o timeout"}}
-	if err := (render.TableRenderer{}).Render(&buf, findings); err != nil {
+	if err := (render.TableRenderer{}).Render(context.Background(), &buf, findings); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	if !strings.Contains(buf.String(), "i/o timeout") {
@@ -389,7 +440,7 @@ func TestTableRenderShowsTheEnrichmentColumnWhenWide(t *testing.T) {
 
 	var buf bytes.Buffer
 	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission"}}
-	if err := renderer.Render(&buf, findings); err != nil {
+	if err := renderer.Render(context.Background(), &buf, findings); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -415,7 +466,7 @@ func TestTableRenderOmitsTheEnrichmentColumnByDefault(t *testing.T) {
 
 	var buf bytes.Buffer
 	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission"}}
-	if err := renderer.Render(&buf, findings); err != nil {
+	if err := renderer.Render(context.Background(), &buf, findings); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -437,7 +488,7 @@ func TestJSONRenderCarriesEnrichmentLinks(t *testing.T) {
 		Candidate: "xample.com",
 		Addresses: []string{"192.0.2.1"},
 	}}
-	if err := (render.JSONRenderer{}).Render(&buf, findings); err != nil {
+	if err := (render.JSONRenderer{}).Render(context.Background(), &buf, findings); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -471,7 +522,7 @@ func TestJSONRenderCarriesEnrichmentLinks(t *testing.T) {
 func TestNDJSONRenderCarriesEnrichmentLinks(t *testing.T) {
 	var buf bytes.Buffer
 	findings := []scan.Finding{{Candidate: "xample.com"}}
-	if err := (render.NDJSONRenderer{}).Render(&buf, findings); err != nil {
+	if err := (render.NDJSONRenderer{}).Render(context.Background(), &buf, findings); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	if !strings.Contains(buf.String(), `"enrichment"`) {
@@ -479,9 +530,228 @@ func TestNDJSONRenderCarriesEnrichmentLinks(t *testing.T) {
 	}
 }
 
+// --abuseipdb-enrich adds an ABUSE% column, independent of --wide: it is one
+// short number per address, unlike the full URLs --wide alone gates.
+func TestTableRenderShowsAbuseScoreColumnWhenClientConfigured(t *testing.T) {
+	client := fakeAbuseIPDBClient(t, 87, "")
+	renderer, err := render.New("table", render.AbuseIPDB(client))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	findings := []scan.Finding{{
+		Candidate: "xample.com",
+		Technique: "omission",
+		Addresses: []string{"192.0.2.1"},
+	}}
+	if err := renderer.Render(context.Background(), &buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "ABUSE%") {
+		t.Fatalf("Render() = %q, want an ABUSE%% column", got)
+	}
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	abuseAt := columnIndex(t, lines[0], "ABUSE%")
+	if val := strings.Fields(lines[1])[abuseAt]; val != "87" {
+		t.Errorf("ABUSE%% = %q, want %q\n%s", val, "87", got)
+	}
+}
+
+// Without --abuseipdb-enrich the table has no ABUSE% column: this is the
+// "byte-for-byte identical when unset" guarantee.
+func TestTableRenderOmitsAbuseScoreColumnByDefault(t *testing.T) {
+	renderer, err := render.New("table")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	findings := []scan.Finding{{Candidate: "xample.com", Technique: "omission", Addresses: []string{"192.0.2.1"}}}
+	if err := renderer.Render(context.Background(), &buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if strings.Contains(buf.String(), "ABUSE%") {
+		t.Errorf("Render() = %q, want no ABUSE%% column without AbuseIPDB()", buf.String())
+	}
+}
+
+// A per-address lookup failure renders as "-" rather than failing the whole
+// report: one bad IP should not take down an otherwise-successful scan.
+func TestTableRenderShowsDashWhenAbuseLookupFails(t *testing.T) {
+	client := fakeAbuseIPDBClient(t, 10, "192.0.2.1")
+	renderer, err := render.New("table", render.AbuseIPDB(client))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	findings := []scan.Finding{{
+		Candidate: "xample.com",
+		Technique: "omission",
+		Addresses: []string{"192.0.2.1"},
+	}}
+	if err := renderer.Render(context.Background(), &buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	abuseAt := columnIndex(t, lines[0], "ABUSE%")
+	if got := strings.Fields(lines[1])[abuseAt]; got != "-" {
+		t.Errorf("ABUSE%% = %q, want %q for a failed lookup\n%s", got, "-", buf.String())
+	}
+}
+
+// An invalid key fails the whole render immediately rather than quietly
+// reporting every address as unscored: every remaining lookup would fail the
+// same way, so continuing would waste the rate-limited budget on calls that
+// cannot succeed and mislead the analyst into reading "-" as "clean".
+func TestTableRenderFailsHardOnInvalidAbuseIPDBKey(t *testing.T) {
+	srv, calls := countingAbuseIPDBServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	pointAbuseIPDBAt(t, srv)
+	renderer, err := render.New("table", render.AbuseIPDB(enrich.NewClient("bad-key", enrich.DefaultRate)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	findings := []scan.Finding{{Candidate: "xample.com", Addresses: []string{"192.0.2.1"}}}
+	err = renderer.Render(context.Background(), &buf, findings)
+	if err == nil {
+		t.Fatal("Render succeeded with an invalid key, want an error")
+	}
+	if !errors.Is(err, enrich.ErrInvalidKey) {
+		t.Errorf("error = %v, want it to wrap enrich.ErrInvalidKey", err)
+	}
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Errorf("server received %d requests, want Render to stop after the first auth failure", got)
+	}
+}
+
+func TestJSONRenderFailsHardOnInvalidAbuseIPDBKey(t *testing.T) {
+	srv, _ := countingAbuseIPDBServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	pointAbuseIPDBAt(t, srv)
+	renderer, err := render.New("json", render.AbuseIPDB(enrich.NewClient("bad-key", enrich.DefaultRate)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	findings := []scan.Finding{{Candidate: "xample.com", Addresses: []string{"192.0.2.1"}}}
+	err = renderer.Render(context.Background(), &buf, findings)
+	if err == nil {
+		t.Fatal("Render succeeded with an invalid key, want an error")
+	}
+	if !errors.Is(err, enrich.ErrInvalidKey) {
+		t.Errorf("error = %v, want it to wrap enrich.ErrInvalidKey", err)
+	}
+}
+
+// A shared address that fails its lookup must only be attempted once across
+// every finding that resolved to it — otherwise a scan with many candidates
+// sharing one failing/rate-limited address turns "one lookup per unique
+// address" into a retry storm against an endpoint that is already failing.
+func TestTableRenderAttemptsAFailingAddressOnlyOnce(t *testing.T) {
+	srv, calls := countingAbuseIPDBServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	pointAbuseIPDBAt(t, srv)
+	renderer, err := render.New("table", render.AbuseIPDB(enrich.NewClient("test-key", enrich.DefaultRate)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	findings := []scan.Finding{
+		{Candidate: "a.com", Addresses: []string{"192.0.2.1"}},
+		{Candidate: "b.com", Addresses: []string{"192.0.2.1"}},
+		{Candidate: "c.com", Addresses: []string{"192.0.2.1"}},
+	}
+	if err := renderer.Render(context.Background(), &buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Errorf("server received %d requests, want exactly 1 for one address shared by 3 findings", got)
+	}
+}
+
+func TestJSONRenderCarriesAbuseConfidenceScore(t *testing.T) {
+	client := fakeAbuseIPDBClient(t, 63, "")
+	renderer, err := render.New("json", render.AbuseIPDB(client))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	findings := []scan.Finding{{Candidate: "xample.com", Addresses: []string{"192.0.2.1"}}}
+	if err := renderer.Render(context.Background(), &buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	var got []struct {
+		Enrichment []struct {
+			Name    string `json:"name"`
+			Address string `json:"address"`
+			Score   *int   `json:"abuse_confidence_score"`
+		} `json:"enrichment"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+
+	var sawScore bool
+	for _, e := range got[0].Enrichment {
+		if e.Name == "AbuseIPDB" && e.Address == "192.0.2.1" {
+			if e.Score == nil || *e.Score != 63 {
+				t.Fatalf("AbuseIPDB entry = %+v, want Score 63", e)
+			}
+			sawScore = true
+		}
+	}
+	if !sawScore {
+		t.Fatalf("no AbuseIPDB entry for 192.0.2.1 in %+v", got[0].Enrichment)
+	}
+}
+
+// Without a configured client the field stays absent: omitempty keeps
+// output identical to before this feature existed.
+func TestJSONRenderOmitsAbuseConfidenceScoreByDefault(t *testing.T) {
+	var buf bytes.Buffer
+	findings := []scan.Finding{{Candidate: "xample.com", Addresses: []string{"192.0.2.1"}}}
+	if err := (render.JSONRenderer{}).Render(context.Background(), &buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if strings.Contains(buf.String(), "abuse_confidence_score") {
+		t.Errorf("Render() = %q, want no abuse_confidence_score field without AbuseIPDB()", buf.String())
+	}
+}
+
+func TestNDJSONRenderCarriesAbuseConfidenceScore(t *testing.T) {
+	client := fakeAbuseIPDBClient(t, 5, "")
+	renderer, err := render.New("ndjson", render.AbuseIPDB(client))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var buf bytes.Buffer
+	findings := []scan.Finding{{Candidate: "xample.com", Addresses: []string{"192.0.2.1"}}}
+	if err := renderer.Render(context.Background(), &buf, findings); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"abuse_confidence_score":5`) {
+		t.Errorf("Render() = %q, want the score inline", buf.String())
+	}
+}
+
 func TestJSONRenderIsValidAndComplete(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (render.JSONRenderer{}).Render(&buf, sampleFindings()); err != nil {
+	if err := (render.JSONRenderer{}).Render(context.Background(), &buf, sampleFindings()); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -502,7 +772,7 @@ func TestJSONRenderIsValidAndComplete(t *testing.T) {
 
 func TestJSONRenderEmptyIsAnArrayNotNull(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (render.JSONRenderer{}).Render(&buf, nil); err != nil {
+	if err := (render.JSONRenderer{}).Render(context.Background(), &buf, nil); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	if got := strings.TrimSpace(buf.String()); got != "[]" {
@@ -512,7 +782,7 @@ func TestJSONRenderEmptyIsAnArrayNotNull(t *testing.T) {
 
 func TestNDJSONRenderOneObjectPerLine(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (render.NDJSONRenderer{}).Render(&buf, sampleFindings()); err != nil {
+	if err := (render.NDJSONRenderer{}).Render(context.Background(), &buf, sampleFindings()); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -534,7 +804,7 @@ func TestNDJSONRenderOneObjectPerLine(t *testing.T) {
 func TestSeedIsRenderedFirstInEveryFormat(t *testing.T) {
 	t.Run("table", func(t *testing.T) {
 		var buf bytes.Buffer
-		if err := (render.TableRenderer{}).Render(&buf, findingsWithTrailingSeed()); err != nil {
+		if err := (render.TableRenderer{}).Render(context.Background(), &buf, findingsWithTrailingSeed()); err != nil {
 			t.Fatalf("Render: %v", err)
 		}
 		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
@@ -551,7 +821,7 @@ func TestSeedIsRenderedFirstInEveryFormat(t *testing.T) {
 
 	t.Run("json", func(t *testing.T) {
 		var buf bytes.Buffer
-		if err := (render.JSONRenderer{}).Render(&buf, findingsWithTrailingSeed()); err != nil {
+		if err := (render.JSONRenderer{}).Render(context.Background(), &buf, findingsWithTrailingSeed()); err != nil {
 			t.Fatalf("Render: %v", err)
 		}
 		var got []scan.Finding
@@ -573,7 +843,7 @@ func TestSeedIsRenderedFirstInEveryFormat(t *testing.T) {
 
 	t.Run("ndjson", func(t *testing.T) {
 		var buf bytes.Buffer
-		if err := (render.NDJSONRenderer{}).Render(&buf, findingsWithTrailingSeed()); err != nil {
+		if err := (render.NDJSONRenderer{}).Render(context.Background(), &buf, findingsWithTrailingSeed()); err != nil {
 			t.Fatalf("Render: %v", err)
 		}
 		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
@@ -599,7 +869,7 @@ func TestTableRendersTheSeedWithNoTriageStatus(t *testing.T) {
 		Technique: engine.TechniqueOriginal,
 		Diff:      scan.DiffUnchanged,
 	}}
-	if err := (render.TableRenderer{}).Render(&buf, findings); err != nil {
+	if err := (render.TableRenderer{}).Render(context.Background(), &buf, findings); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	if strings.Contains(buf.String(), "new") {
@@ -694,7 +964,7 @@ func idnFindings() []scan.Finding {
 
 func TestTableRenderShowsUnicodeCandidatesByDefault(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (render.TableRenderer{}).Render(&buf, idnFindings()); err != nil {
+	if err := (render.TableRenderer{}).Render(context.Background(), &buf, idnFindings()); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -719,7 +989,7 @@ func TestTableRenderPunycodeOption(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := renderer.Render(&buf, idnFindings()); err != nil {
+	if err := renderer.Render(context.Background(), &buf, idnFindings()); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -739,7 +1009,7 @@ func TestTableRenderEnrichmentStaysASCII(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := renderer.Render(&buf, idnFindings()); err != nil {
+	if err := renderer.Render(context.Background(), &buf, idnFindings()); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -752,7 +1022,7 @@ func TestTableRenderEnrichmentStaysASCII(t *testing.T) {
 
 func TestJSONRenderKeepsPunycodeAndCarriesUnicode(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (render.JSONRenderer{}).Render(&buf, idnFindings()); err != nil {
+	if err := (render.JSONRenderer{}).Render(context.Background(), &buf, idnFindings()); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
@@ -778,7 +1048,7 @@ func TestJSONRenderKeepsPunycodeAndCarriesUnicode(t *testing.T) {
 
 func TestNDJSONRenderCarriesUnicode(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (render.NDJSONRenderer{}).Render(&buf, idnFindings()); err != nil {
+	if err := (render.NDJSONRenderer{}).Render(context.Background(), &buf, idnFindings()); err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 
