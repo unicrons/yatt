@@ -5,6 +5,8 @@ Every scan is recorded, so the second scan of a seed reports each candidate as `
 registered, NS, MX, A, wildcard — so a CDN rotating its addresses is not a change, but a candidate
 becoming registered, gaining MX, or leaving a catch-all zone for real infrastructure is.
 
+## Triage verdicts
+
 Triage state is the other half. A verdict is keyed by seed and candidate rather than by scan, so it
 survives every future run:
 
@@ -17,9 +19,19 @@ yatt scan example.com --status new                # only the untriaged backlog
 yatt scan example.com --status malicious,suspicious
 ```
 
-Valid statuses are `new`, `benign`, `suspicious`, `malicious`, `watchlist`, `ignored`,
-`false_positive` and `owned`. `new` is the implicit state of a candidate nobody has judged — it is
-never stored, and nothing can be set back to it.
+Any settable status can move to any other, including itself to revise only the note. Nothing moves
+back to `new`.
+
+| Status | Meaning | Settable via `--status`? |
+|---|---|---|
+| `new` | nobody has judged this candidate yet | no — implicit only, and nothing can be set back to it |
+| `benign` | judged harmless | yes |
+| `suspicious` | worth watching, not yet proven bad | yes |
+| `malicious` | confirmed abusive look-alike | yes |
+| `watchlist` | keep surfacing regardless of verdict | yes |
+| `ignored` | stop surfacing | yes |
+| `false_positive` | the engine should not have produced this candidate | yes |
+| `owned` | your organization registered it itself, defensively or otherwise | yes |
 
 Filtering applies to the report only. Every candidate is still resolved and recorded, so a filtered
 scan does not leave gaps in the seed's history or make the next diff report phantom changes.
