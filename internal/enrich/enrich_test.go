@@ -37,6 +37,21 @@ func TestAddressLinksFormatsBothServices(t *testing.T) {
 		if l.URL != want[l.Name] {
 			t.Errorf("%s URL = %q, want %q", l.Name, l.URL, want[l.Name])
 		}
+		// Address lets a caller find "the AbuseIPDB entry for IP X" without
+		// positional index arithmetic into the slice.
+		if l.Address != "192.0.2.1" {
+			t.Errorf("%s Address = %q, want %q", l.Name, l.Address, "192.0.2.1")
+		}
+	}
+}
+
+// DomainLinks has no address to report: it exists even for a candidate DNS
+// never resolved.
+func TestDomainLinksCarryNoAddress(t *testing.T) {
+	for _, l := range enrich.DomainLinks("xample.com") {
+		if l.Address != "" {
+			t.Errorf("%s Address = %q, want empty for a by-domain link", l.Name, l.Address)
+		}
 	}
 }
 

@@ -5,13 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 
+	"github.com/unicrons/yatt/internal/enrich"
 	"github.com/unicrons/yatt/internal/resolver"
 	"github.com/unicrons/yatt/internal/scan"
 	"github.com/unicrons/yatt/internal/store"
@@ -104,6 +108,35 @@ func withTempStore(t *testing.T) {
 		return store.Open(path)
 	}
 	t.Cleanup(func() { newStore = original })
+}
+
+// withFakeEnrichClient swaps newEnrichClient for the duration of a test so
+// --abuseipdb-enrich never reaches the real AbuseIPDB API: the client it
+// hands back still runs the real Client code, but points at a local server
+// that answers every check request with score. It returns the key the
+// command actually passed to newEnrichClient.
+func withFakeEnrichClient(t *testing.T, score int) *string {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"abuseConfidenceScore":` + strconv.Itoa(score) + `}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	originalCheckURL := enrich.CheckURL
+	enrich.CheckURL = srv.URL
+	t.Cleanup(func() { enrich.CheckURL = originalCheckURL })
+
+	var gotKey string
+	original := newEnrichClient
+	newEnrichClient = func(key string) *enrich.Client {
+		gotKey = key
+		return enrich.NewClient(key)
+	}
+	t.Cleanup(func() { newEnrichClient = original })
+
+	return &gotKey
 }
 
 // run executes the command tree with args, returning stdout and stderr.
@@ -201,6 +234,80 @@ func TestScanRendersNDJSON(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &f); err != nil {
 			t.Errorf("line %d is not valid JSON: %v", i, err)
 		}
+	}
+}
+
+// --abuseipdb-enrich without YATT_ABUSEIPDB_KEY must fail before any DNS
+// resolution happens: withForbiddenResolver fails the test the moment a
+// resolver is even constructed.
+func TestScanAbuseipdbEnrichRequiresEnvVar(t *testing.T) {
+	withTempStore(t)
+	withForbiddenResolver(t)
+	t.Setenv("YATT_ABUSEIPDB_KEY", "")
+
+	_, _, err := run(t, "scan", "example.com", "--abuseipdb-enrich")
+	if err == nil {
+		t.Fatal("scan --abuseipdb-enrich succeeded without YATT_ABUSEIPDB_KEY, want an error")
+	}
+	if !strings.Contains(err.Error(), "YATT_ABUSEIPDB_KEY") {
+		t.Errorf("error = %q, want it to name YATT_ABUSEIPDB_KEY", err)
+	}
+}
+
+func TestScanAbuseipdbEnrichWiresClientThroughToJSON(t *testing.T) {
+	withTempStore(t)
+	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
+	gotKey := withFakeEnrichClient(t, 77)
+	t.Setenv("YATT_ABUSEIPDB_KEY", "a-real-looking-key")
+
+	stdout, _, err := run(t, "scan", "example.com", "--abuseipdb-enrich",
+		"--output", "json", "--technique", "omission")
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if *gotKey != "a-real-looking-key" {
+		t.Errorf("key passed to newEnrichClient = %q, want %q", *gotKey, "a-real-looking-key")
+	}
+	if !strings.Contains(stdout, `"abuse_confidence_score": 77`) {
+		t.Errorf("output is missing the AbuseIPDB score:\n%s", stdout)
+	}
+}
+
+// The AbuseIPDB lookup has no progress indicator of its own and is
+// rate-limited to 1/s, so a scan with several unique addresses would
+// otherwise sit silent long enough to look hung; --verbose gets a heads-up
+// naming how many lookups are about to happen.
+func TestScanAbuseipdbEnrichVerboseReportsLookupCount(t *testing.T) {
+	withTempStore(t)
+	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
+	withFakeEnrichClient(t, 0)
+	t.Setenv("YATT_ABUSEIPDB_KEY", "a-real-looking-key")
+
+	_, stderr, err := run(t, "scan", "example.com", "--abuseipdb-enrich", "--verbose",
+		"--output", "json", "--technique", "omission")
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if !strings.Contains(stderr, "looking up 1 unique address(es) on AbuseIPDB") {
+		t.Errorf("stderr is missing the AbuseIPDB heads-up:\n%s", stderr)
+	}
+}
+
+// Without --verbose the heads-up stays quiet, same as every other diagnostic
+// line this command prints.
+func TestScanAbuseipdbEnrichQuietWithoutVerbose(t *testing.T) {
+	withTempStore(t)
+	withFakeResolver(t, scriptedResolver{registered: map[string]bool{"xample.com": true}})
+	withFakeEnrichClient(t, 0)
+	t.Setenv("YATT_ABUSEIPDB_KEY", "a-real-looking-key")
+
+	_, stderr, err := run(t, "scan", "example.com", "--abuseipdb-enrich",
+		"--output", "json", "--technique", "omission")
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if strings.Contains(stderr, "AbuseIPDB") {
+		t.Errorf("stderr should be quiet without --verbose:\n%s", stderr)
 	}
 }
 

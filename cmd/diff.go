@@ -48,7 +48,7 @@ func runDiff(cmd *cobra.Command, global *globalOptions, seed string) (retErr err
 	}
 
 	changes := scan.Changes(comparison.Result)
-	if err := renderer.Render(cmd.OutOrStdout(), changes); err != nil {
+	if err := renderer.Render(cmd.Context(), cmd.OutOrStdout(), changes); err != nil {
 		return err
 	}
 

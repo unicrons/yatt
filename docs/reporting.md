@@ -43,8 +43,9 @@ does not belong in.
 ## Enrichment links
 
 Every finding carries ready-to-open AbuseIPDB and Shodan lookup links: one pair by domain, plus one
-pair per resolved address. Nothing here makes an HTTP call — these are links to open by hand, not API
-calls this tool makes on your behalf, so there is no key to configure and no rate limit to trip.
+pair per resolved address. Nothing here makes an HTTP call by default — these are links to open by
+hand, not API calls this tool makes on your behalf, so there is no key to configure and no rate limit
+to trip.
 
 ```sh
 yatt scan example.com --output json | jq '.[0].enrichment'
@@ -58,3 +59,45 @@ carrying the by-domain pair:
 ```sh
 yatt scan example.com --wide
 ```
+
+## AbuseIPDB confidence score (`--abuseipdb-enrich`)
+
+`--abuseipdb-enrich` is the one opt-in exception to "no HTTP call ever leaves this tool": it looks up
+each resolved address's AbuseIPDB **Confidence of Abuse** percentage and reports it alongside the
+finding. Unlike the enrichment links above, this makes a real API call and spends AbuseIPDB API
+credits, so it stays off unless you ask for it.
+
+It needs a key in the `YATT_ABUSEIPDB_KEY` environment variable — never as a CLI argument, so it never
+lands in shell history or `ps` output. Passing the flag without the variable set is a hard error,
+before any DNS resolution happens:
+
+```sh
+export YATT_ABUSEIPDB_KEY=your-key-here
+yatt scan example.com --abuseipdb-enrich
+```
+
+The table gains an `ABUSE%` column — independent of `--wide`, since a score is one short number, not
+a full URL. `--output json`/`--output ndjson` set `abuse_confidence_score` on each address's AbuseIPDB
+entry:
+
+```sh
+yatt scan example.com --abuseipdb-enrich --output json | jq '.[].enrichment[] | select(.name == "AbuseIPDB")'
+```
+
+Lookups are cached by address for the duration of one scan, so a run with many candidates resolving
+to the same address only spends one API call on it — there is no cross-scan cache yet, so a later scan
+of the same seed looks every address up again. A lookup that fails for one address (a timeout, a rate
+limit) leaves that address without a score rather than failing the whole report; an invalid key fails
+the run immediately, since every subsequent lookup would fail the same way.
+
+Lookups run sequentially, one per second, and have no progress indicator of their own — a scan
+turning up many unique addresses can sit quiet for that many seconds after the DNS progress bar
+clears and before the report prints. `--verbose` prints how many lookups are about to happen so that
+wait doesn't read as a hang:
+
+```sh
+yatt scan example.com --abuseipdb-enrich --verbose
+# stderr: looking up 12 unique address(es) on AbuseIPDB (rate-limited to 1/s, ~12s)
+```
+
+`diff` never re-resolves or makes live calls, so it has no `--abuseipdb-enrich` flag.

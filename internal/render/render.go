@@ -5,9 +5,12 @@
 package render
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -28,7 +31,7 @@ var Formats = []string{"table", "json", "ndjson"}
 // future ordering or sorting option cannot accidentally bury the baseline row in
 // one format while leaving it in place in another.
 type Renderer interface {
-	Render(w io.Writer, findings []scan.Finding) error
+	Render(ctx context.Context, w io.Writer, findings []scan.Finding) error
 	// RenderScans writes a seed's scan history, so `yatt history` honours
 	// --output exactly as `yatt scan` does.
 	RenderScans(w io.Writer, scans []store.Scan) error
@@ -37,8 +40,16 @@ type Renderer interface {
 	RenderTriage(w io.Writer, entries []store.Triage) error
 }
 
+// options collects every setting New's opts can configure, before New
+// hands the relevant fields to whichever concrete renderer it builds.
+type options struct {
+	wide      bool
+	punycode  bool
+	abuseIPDB *enrich.Client
+}
+
 // Option adjusts a renderer built by New.
-type Option func(*TableRenderer)
+type Option func(*options)
 
 // Wide turns on the table's ENRICH column. It is off by default because the
 // links are two full URLs per row, derivable from the candidate name alone,
@@ -46,7 +57,7 @@ type Option func(*TableRenderer)
 // price on the default view for something an analyst wants only when they are
 // about to open one. JSON and NDJSON carry the links either way.
 func Wide() Option {
-	return func(t *TableRenderer) { t.wide = true }
+	return func(o *options) { o.wide = true }
 }
 
 // Punycode keeps the table's CANDIDATE column in the ASCII "xn--" wire form
@@ -56,41 +67,58 @@ func Wide() Option {
 // and what the store keys on, so it stays available behind this option, and
 // the machine-readable formats always carry it regardless.
 func Punycode() Option {
-	return func(t *TableRenderer) { t.punycode = true }
+	return func(o *options) { o.punycode = true }
+}
+
+// AbuseIPDB turns on live AbuseIPDB Confidence of Abuse lookups: the table
+// gains an ABUSE% column and JSON/NDJSON populate each address's
+// abuse_confidence_score. Unlike Wide and Punycode this makes real HTTP
+// calls, so it is only ever set when the caller opted in explicitly (the
+// scan command's --abuseipdb-enrich flag).
+func AbuseIPDB(client *enrich.Client) Option {
+	return func(o *options) { o.abuseIPDB = client }
 }
 
 // New returns the renderer for the named format.
 func New(format string, opts ...Option) (Renderer, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "", "table":
-		var t TableRenderer
-		for _, opt := range opts {
-			opt(&t)
-		}
-		return t, nil
+		return TableRenderer(o), nil
 	case "json":
-		return JSONRenderer{}, nil
+		return JSONRenderer{abuseIPDB: o.abuseIPDB}, nil
 	case "ndjson":
-		return NDJSONRenderer{}, nil
+		return NDJSONRenderer{abuseIPDB: o.abuseIPDB}, nil
 	default:
 		return nil, fmt.Errorf("unknown output format %q (available: %s)", format, strings.Join(Formats, ", "))
 	}
 }
 
 // TableRenderer writes an aligned, human-readable table. Its zero value is
-// the compact table; use New with Wide to add the enrichment column.
+// the compact table; use New with Wide/AbuseIPDB to add columns.
 type TableRenderer struct {
-	wide     bool
-	punycode bool
+	wide      bool
+	punycode  bool
+	abuseIPDB *enrich.Client
 }
 
 // Render implements Renderer.
-func (t TableRenderer) Render(w io.Writer, findings []scan.Finding) error {
+func (t TableRenderer) Render(ctx context.Context, w io.Writer, findings []scan.Finding) error {
 	findings = scan.SeedFirst(findings)
+	scores, err := abuseScores(ctx, findings, t.abuseIPDB)
+	if err != nil {
+		return err
+	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	header := "CANDIDATE\tTECHNIQUE\tDIFF\tTRIAGE\tREGISTERED\tNS\tMX\tA\tWILDCARD\tADDRESSES"
 	if t.wide {
 		header += "\tENRICH"
+	}
+	if t.abuseIPDB != nil {
+		header += "\tABUSE%"
 	}
 	if _, err := fmt.Fprintln(tw, header); err != nil {
 		return err
@@ -112,11 +140,70 @@ func (t TableRenderer) Render(w io.Writer, findings []scan.Finding) error {
 		if t.wide {
 			row += "\t" + enrichmentColumn(f.Candidate)
 		}
+		if t.abuseIPDB != nil {
+			row += "\t" + abuseColumn(f.Addresses, scores)
+		}
 		if _, err := fmt.Fprintln(tw, row); err != nil {
 			return err
 		}
 	}
 	return tw.Flush()
+}
+
+// abuseScores looks up client's AbuseIPDB Confidence of Abuse score for every
+// unique address across findings, so a scan with many candidates resolving
+// to the same address is attempted once, regardless of whether that attempt
+// succeeds. A nil client (the default, --abuseipdb-enrich unset) returns a
+// nil map without making any call.
+//
+// An invalid key (enrich.ErrInvalidKey) is a hard error here, not a
+// per-address failure: every remaining lookup would fail identically, so
+// the whole render aborts instead of quietly reporting every address as
+// unscored.
+func abuseScores(ctx context.Context, findings []scan.Finding, client *enrich.Client) (map[string]int, error) {
+	if client == nil {
+		return nil, nil
+	}
+	scores := make(map[string]int)
+	attempted := make(map[string]struct{})
+	for _, f := range findings {
+		for _, addr := range f.Addresses {
+			if _, ok := attempted[addr]; ok {
+				continue
+			}
+			attempted[addr] = struct{}{}
+			score, err := client.Score(ctx, addr)
+			if err != nil {
+				if errors.Is(err, enrich.ErrInvalidKey) {
+					return nil, err
+				}
+				// Best-effort: any other lookup failure just leaves this
+				// address out of the map, which renders as "-" rather than
+				// aborting the whole report. attempted still marks it so a
+				// second candidate sharing the address does not retry it.
+				continue
+			}
+			scores[addr] = score
+		}
+	}
+	return scores, nil
+}
+
+// abuseColumn renders one row's AbuseIPDB scores, comma-joined in the same
+// order as the ADDRESSES column, using "-" for an address that got no score.
+func abuseColumn(addresses []string, scores map[string]int) string {
+	if len(addresses) == 0 {
+		return "-"
+	}
+	parts := make([]string, len(addresses))
+	for i, addr := range addresses {
+		if score, ok := scores[addr]; ok {
+			parts[i] = strconv.Itoa(score)
+		} else {
+			parts[i] = "-"
+		}
+	}
+	return strings.Join(parts, ",")
 }
 
 // enrichmentColumn renders the compact, table-friendly form of a finding's
@@ -181,28 +268,49 @@ type findingView struct {
 }
 
 // withEnrichment attaches each finding's enrichment links and decoded IDN
-// form, preserving order.
-func withEnrichment(findings []scan.Finding) []findingView {
+// form, preserving order. When client is non-nil, each AbuseIPDB address
+// entry's Score is populated from one lookup per unique address across
+// findings.
+func withEnrichment(ctx context.Context, findings []scan.Finding, client *enrich.Client) ([]findingView, error) {
+	scores, err := abuseScores(ctx, findings, client)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]findingView, len(findings))
 	for i, f := range findings {
-		view := findingView{Finding: f, Enrichment: enrich.ForFinding(f)}
+		links := enrich.ForFinding(f)
+		for j := range links {
+			if links[j].Name != "AbuseIPDB" || links[j].Address == "" {
+				continue
+			}
+			if score, ok := scores[links[j].Address]; ok {
+				links[j].Score = &score
+			}
+		}
+		view := findingView{Finding: f, Enrichment: links}
 		if unicode := engine.ToUnicode(f.Candidate); unicode != f.Candidate {
 			view.Unicode = unicode
 		}
 		out[i] = view
 	}
-	return out
+	return out, nil
 }
 
 // JSONRenderer writes the findings as one indented JSON array.
-type JSONRenderer struct{}
+type JSONRenderer struct {
+	abuseIPDB *enrich.Client
+}
 
 // Render implements Renderer.
-func (JSONRenderer) Render(w io.Writer, findings []scan.Finding) error {
+func (j JSONRenderer) Render(ctx context.Context, w io.Writer, findings []scan.Finding) error {
 	if findings == nil {
 		findings = []scan.Finding{}
 	}
-	return encodeIndented(w, withEnrichment(scan.SeedFirst(findings)))
+	views, err := withEnrichment(ctx, scan.SeedFirst(findings), j.abuseIPDB)
+	if err != nil {
+		return err
+	}
+	return encodeIndented(w, views)
 }
 
 // RenderScans implements Renderer.
@@ -222,12 +330,18 @@ func (JSONRenderer) RenderTriage(w io.Writer, entries []store.Triage) error {
 }
 
 // NDJSONRenderer writes one compact JSON object per line, for piping.
-type NDJSONRenderer struct{}
+type NDJSONRenderer struct {
+	abuseIPDB *enrich.Client
+}
 
 // Render implements Renderer.
-func (NDJSONRenderer) Render(w io.Writer, findings []scan.Finding) error {
+func (n NDJSONRenderer) Render(ctx context.Context, w io.Writer, findings []scan.Finding) error {
+	views, err := withEnrichment(ctx, scan.SeedFirst(findings), n.abuseIPDB)
+	if err != nil {
+		return err
+	}
 	enc := json.NewEncoder(w)
-	for _, f := range withEnrichment(scan.SeedFirst(findings)) {
+	for _, f := range views {
 		if err := enc.Encode(f); err != nil {
 			return err
 		}
